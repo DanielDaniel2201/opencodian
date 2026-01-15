@@ -1,0 +1,51 @@
+/**
+ * Settings types for Opencodian
+ */
+
+import type { Conversation } from "./chat";
+import { DEFAULT_MODEL } from "./models";
+
+export interface OpencodianSettings {
+  // User preferences
+  userName: string;
+
+  // Model configuration
+  model: string;
+
+  // Permission mode
+  permissionMode: "yolo" | "safe";
+
+  // Storage
+  conversations: Conversation[];
+  activeConversationId: string | null;
+
+  // Environment
+  environmentVariables: string;
+
+  // Custom system prompt
+  systemPrompt: string;
+
+  // Excluded tags (notes with these tags won't be auto-loaded)
+  excludedTags: string[];
+
+  // OpenCode CLI path (optional, for custom installations)
+  opencodePath: string;
+
+  // Debugging
+  debugLogging: boolean;
+}
+
+export const DEFAULT_SETTINGS: OpencodianSettings = {
+  userName: "",
+  model: DEFAULT_MODEL.id,
+  permissionMode: "yolo",
+  conversations: [],
+  activeConversationId: null,
+  environmentVariables: "",
+  systemPrompt: "",
+  excludedTags: [],
+  opencodePath: "",
+  debugLogging: false,
+};
+
+export const VIEW_TYPE_OPENCODIAN = "opencodian-view";
