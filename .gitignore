@@ -25,3 +25,8 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Documentation & Scripts (Local only)
+DEVELOPMENT.md
+QUICKSTART.md
+link-to-vault.bat
