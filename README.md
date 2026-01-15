@@ -2,6 +2,8 @@
 
 Opencodian is an Obsidian plugin that embeds OpenCode as a sidebar chat interface. By treating your Obsidian vault as the working directory, it provides full agentic capabilities, including file reading/writing, bash command execution, and complex multi-step workflows.
 
+> **Note**: This project is in early, active development. Bugs are to be expected. Issues and Pull Requests are highly welcome!
+
 ## Features
 
 - **Embedded AI Agent**: Integrate OpenCode directly into your Obsidian sidebar.
