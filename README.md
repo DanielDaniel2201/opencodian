@@ -4,11 +4,22 @@ Opencodian is an Obsidian plugin that embeds OpenCode as a sidebar chat interfac
 
 > **Note**: This project is in early, active development. Bugs are to be expected. Issues and Pull Requests are highly welcome!
 
+## Prerequisites
+
+Before using Opencodian, you must have [OpenCode](https://github.com/sst/opencode) installed on your system. Follow the [OpenCode installation guide](https://opencode.ai/docs/installation) to set it up.
+
 ## Features
 
 - **Embedded AI Agent**: Integrate OpenCode directly into your Obsidian sidebar.
 - **Vault Context**: The agent operates with your vault as its working directory.
 - **Agentic Capabilities**: Supports file operations, terminal commands, and autonomous workflows.
+
+## Roadmap
+
+- [ ] Custom system prompts
+- [ ] MCP server integration
+- [ ] Subscription-aware model selection
+- [ ] Cross-conversation memory
 
 ## Quick Start
 
