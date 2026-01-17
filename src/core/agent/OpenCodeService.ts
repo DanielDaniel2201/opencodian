@@ -28,6 +28,8 @@ export interface QueryOptions {
   mentions?: string[];
   /** Rich mention context with folder contents */
   mentionContexts?: MentionContext[];
+  /** Timeout in milliseconds for the entire query (default: 120000 = 2 minutes) */
+  timeout?: number;
 }
 
 type OpencodeClient = ReturnType<typeof createOpencodeClient>;
@@ -464,6 +466,42 @@ export class OpenCodeService {
     this.abortController = new AbortController();
     const sessionId = await this.ensureSession();
     const abortSignal = this.abortController.signal;
+    
+    // Timeout configuration
+    // - 30 seconds to receive first meaningful response
+    // - 60 seconds between meaningful events (text/tool updates)
+    const initialTimeout = 30000; // 30s to get first response
+    const inactivityTimeout = 60000; // 60s between meaningful events
+    let receivedMeaningfulEvent = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    
+    const setTimeoutWithDuration = (duration: number): void => {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        if (this.abortController) {
+          const msg = receivedMeaningfulEvent 
+            ? `No response for ${duration / 1000}s`
+            : `No initial response within ${duration / 1000}s`;
+          console.error(`[OpenCodeService] Query timed out: ${msg}`);
+          this.abortController.abort();
+        }
+      }, duration);
+    };
+    
+    const resetTimeout = (): void => {
+      receivedMeaningfulEvent = true;
+      setTimeoutWithDuration(inactivityTimeout);
+    };
+    
+    const clearTimeoutHandler = (): void => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+    };
+    
+    // Start initial timeout
+    setTimeoutWithDuration(initialTimeout);
 
     // Debug: collect all events for this turn
     const debugEvents: unknown[] = [];
@@ -586,6 +624,7 @@ export class OpenCodeService {
           // Handle streaming text deltas
           if (part.type === "text") {
             if (delta) {
+              resetTimeout(); // Got meaningful content
               yield { type: "text", content: delta };
             } else if (part.text) {
               // Fallback: if no delta, try to diff or just yield full text if it's a new chunk
@@ -619,6 +658,7 @@ export class OpenCodeService {
               if (state.status === "pending" && !hasNonEmptyInput) {
                 continue;
               }
+              resetTimeout(); // Got meaningful content
               yield {
                 type: "tool_use",
                 toolName: part.tool,
@@ -630,6 +670,7 @@ export class OpenCodeService {
               !completedTools.has(toolUseId)
             ) {
               completedTools.add(toolUseId);
+              resetTimeout(); // Got meaningful content
               yield {
                 type: "tool_result",
                 toolUseId,
@@ -640,6 +681,7 @@ export class OpenCodeService {
               !completedTools.has(toolUseId)
             ) {
               completedTools.add(toolUseId);
+              resetTimeout(); // Got meaningful content
               yield {
                 type: "tool_result",
                 toolUseId,
@@ -671,6 +713,14 @@ export class OpenCodeService {
       
       yield { type: "done" };
     } catch (error) {
+      clearTimeoutHandler();
+      
+      // Check if this was a timeout-induced abort
+      const isTimeout = abortSignal.aborted && String(error).includes("aborted");
+      const errorMessage = isTimeout 
+        ? "Request timed out. Please check your network connection."
+        : (error instanceof Error ? error.message : "Unknown error");
+      
       console.error("[OpenCodeService] Query error:", error);
       
       // Save debug turn even on error
@@ -682,10 +732,11 @@ export class OpenCodeService {
       
       yield {
         type: "error",
-        content: error instanceof Error ? error.message : "Unknown error",
+        content: errorMessage,
       };
       yield { type: "done" };
     } finally {
+      clearTimeoutHandler();
       this.abortController = null;
     }
   }

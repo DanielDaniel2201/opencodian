@@ -182,6 +182,10 @@ export class OpencodianView extends ItemView {
       }
     });
 
+    // Auto-resize textarea based on content
+    this.inputEl.addEventListener("input", () => this.adjustInputHeight());
+    this.adjustInputHeight();
+
     // Initial render
     this.renderHistoryList();
     await this.loadConversation();
@@ -427,6 +431,7 @@ export class OpencodianView extends ItemView {
     if (!text) return;
 
     this.inputEl.value = "";
+    this.adjustInputHeight(); // Reset height after clearing
 
     // Get mentions from chips system - full MentionItem objects
     const mentionItems = this.fileMention ? this.fileMention.getMentionsAndClear() : [];
@@ -501,6 +506,9 @@ export class OpencodianView extends ItemView {
     workingEl.className = "opencodian-working";
     workingEl.textContent = "Working on it...";
     contentEl.appendChild(workingEl);
+    
+    // Immediately scroll to show the working placeholder
+    this.scrollToBottom();
 
     const clearWorking = () => {
       if (workingEl.parentElement) workingEl.remove();
@@ -602,8 +610,12 @@ export class OpencodianView extends ItemView {
           this.scrollToBottom();
         } else if (chunk.type === "error") {
           clearWorking();
-          contentEl.textContent = `Error: ${chunk.content}`;
-          contentEl.addClass("error");
+          // Remove the placeholder and add fresh error message
+          if (assistantMsgEl.parentElement) {
+            assistantMsgEl.remove();
+          }
+          this.addMessage("assistant", `❗ ${chunk.content}`);
+          this.scrollToBottom();
         } else if (chunk.type === "done") {
           clearWorking();
           if (mdRenderTimer !== null) {
@@ -628,11 +640,15 @@ export class OpencodianView extends ItemView {
         }
       }
     } catch (error) {
-      clearWorking();
-      contentEl.textContent = `Error: ${
-        error instanceof Error ? error.message : "Unknown error"
-      }`;
-      contentEl.addClass("error");
+      // Remove the placeholder assistant message entirely
+      if (assistantMsgEl.parentElement) {
+        assistantMsgEl.remove();
+      }
+      
+      // Add a fresh error message as AI response
+      const errorMsg = error instanceof Error ? error.message : "Unknown error";
+      this.addMessage("assistant", `❗ ${errorMsg}`);
+      this.scrollToBottom();
       
       // Reset generating state on error
       this.setGeneratingState(false);
@@ -651,6 +667,36 @@ export class OpencodianView extends ItemView {
       top: this.messagesEl.scrollHeight,
       behavior: "smooth",
     });
+  }
+
+  /**
+   * Show error message in content area with red emoji
+   */
+  private showErrorInContent(contentEl: HTMLElement, message: string): void {
+    contentEl.empty();
+    contentEl.addClass("opencodian-error-content");
+    
+    const errorEl = document.createElement("div");
+    errorEl.className = "opencodian-error-message";
+    errorEl.innerHTML = `<span class="opencodian-error-icon">&#10071;</span> ${message}`;
+    contentEl.appendChild(errorEl);
+  }
+
+  /**
+   * Adjust textarea height based on content (auto-resize)
+   */
+  private adjustInputHeight(): void {
+    const minHeight = 60;
+    const maxHeight = 200;
+    
+    // Reset height to auto to get the actual scrollHeight
+    this.inputEl.style.height = "auto";
+    
+    // Calculate new height within bounds
+    const scrollHeight = this.inputEl.scrollHeight;
+    const newHeight = Math.min(Math.max(scrollHeight, minHeight), maxHeight);
+    
+    this.inputEl.style.height = `${newHeight}px`;
   }
 
   // ========== UI HELPERS ==========

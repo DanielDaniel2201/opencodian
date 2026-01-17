@@ -21,7 +21,6 @@ const copyAssets = {
       for (const file of assets) {
         if (existsSync(file)) {
           copyFileSync(file, `${DIST_DIR}/${file}`);
-          console.log(`Copied ${file} to ${DIST_DIR}/`);
         }
       }
     });

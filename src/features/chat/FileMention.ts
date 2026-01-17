@@ -306,7 +306,7 @@ export class FileMention {
 
       case "Enter":
         e.preventDefault();
-        e.stopPropagation(); // Critical: prevent View from sending message
+        e.stopImmediatePropagation(); // Critical: prevent View's keydown handler from sending
         this.selectItem(this.filteredItems[this.selectedIndex]);
         break;
 
