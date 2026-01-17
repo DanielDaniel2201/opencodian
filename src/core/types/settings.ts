@@ -11,6 +11,7 @@ export interface OpencodianSettings {
 
   // Model configuration
   model: string;
+  recentModels: string[];
 
   // Permission mode
   permissionMode: "yolo" | "safe";
@@ -38,6 +39,7 @@ export interface OpencodianSettings {
 export const DEFAULT_SETTINGS: OpencodianSettings = {
   userName: "",
   model: DEFAULT_MODEL.id,
+  recentModels: [],
   permissionMode: "yolo",
   conversations: [],
   activeConversationId: null,

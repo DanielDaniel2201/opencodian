@@ -11,7 +11,14 @@ import { spawn } from "child_process";
 import * as http from "http";
 import * as readline from "readline";
 import type { App } from "obsidian";
-import type { ChatMessage, ImageAttachment, StreamChunk } from "../types";
+import type { ChatMessage, ImageAttachment, StreamChunk, ConfigProvidersResponse } from "../types";
+import { 
+  OpencodianError, 
+  UserCancellationError, 
+  TimeoutError, 
+  ServerError, 
+  NetworkError 
+} from "../errors";
 
 export interface MentionContext {
   path: string;
@@ -474,16 +481,18 @@ export class OpenCodeService {
     const inactivityTimeout = 60000; // 60s between meaningful events
     let receivedMeaningfulEvent = false;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let isTimeoutTriggered = false;
     
     const setTimeoutWithDuration = (duration: number): void => {
       if (timeoutId) clearTimeout(timeoutId);
       timeoutId = setTimeout(() => {
         if (this.abortController) {
+          isTimeoutTriggered = true;
           const msg = receivedMeaningfulEvent 
             ? `No response for ${duration / 1000}s`
             : `No initial response within ${duration / 1000}s`;
           console.error(`[OpenCodeService] Query timed out: ${msg}`);
-          this.abortController.abort();
+          this.abortController.abort(new TimeoutError(duration, receivedMeaningfulEvent ? "inactivity" : "initial"));
         }
       }, duration);
     };
@@ -604,7 +613,14 @@ export class OpenCodeService {
       const completedTools = new Set<string>();
 
       for await (const event of eventStream) {
-        if (abortSignal.aborted) break;
+        if (abortSignal.aborted) {
+           // If we have a specific abort reason (like TimeoutError), throw it to be caught below
+           if (abortSignal.reason instanceof Error) {
+             throw abortSignal.reason;
+           }
+           // Otherwise it's a manual cancellation
+           throw new UserCancellationError();
+        }
 
         // Collect event for debug
         debugEvents.push(event);
@@ -715,24 +731,41 @@ export class OpenCodeService {
     } catch (error) {
       clearTimeoutHandler();
       
-      // Check if this was a timeout-induced abort
-      const isTimeout = abortSignal.aborted && String(error).includes("aborted");
-      const errorMessage = isTimeout 
-        ? "Request timed out. Please check your network connection."
-        : (error instanceof Error ? error.message : "Unknown error");
+      // Handle known error types
+      if (error instanceof UserCancellationError) {
+        yield { type: "done" }; // Graceful exit
+        return;
+      }
+
+      let finalError: OpencodianError;
       
-      console.error("[OpenCodeService] Query error:", error);
+      if (error instanceof OpencodianError) {
+        finalError = error;
+      } else if (isTimeoutTriggered) {
+        finalError = new TimeoutError(initialTimeout);
+      } else {
+        // Map native errors to OpencodianErrors
+        const msg = String(error);
+        if (msg.includes("ECONNREFUSED") || msg.includes("Network")) {
+          finalError = new NetworkError(error instanceof Error ? error : new Error(msg));
+        } else {
+           // Default to generic server/unknown error
+           finalError = new ServerError(500, error instanceof Error ? error.message : "Unknown error");
+        }
+      }
+      
+      console.error("[OpenCodeService] Query error:", finalError);
       
       // Save debug turn even on error
       await this.saveDebugTurn({
         timestamp: new Date().toISOString(),
         userPrompt: prompt,
-        events: [...debugEvents, { type: "error", error: String(error) }],
+        events: [...debugEvents, { type: "error", error: finalError.message }],
       });
       
       yield {
         type: "error",
-        content: errorMessage,
+        content: finalError.message,
       };
       yield { type: "done" };
     } finally {
@@ -746,7 +779,7 @@ export class OpenCodeService {
    */
   async cancel(): Promise<void> {
     if (this.abortController) {
-      this.abortController.abort();
+      this.abortController.abort(new UserCancellationError());
     }
 
     if (this.client && this.sessionId) {
@@ -783,7 +816,66 @@ export class OpenCodeService {
     this.initPromise = null;
   }
 
-  private log(message: string, ...args: any[]) {
+  private log(message: string, ...args: any[]): void {
     console.log(`[OpenCodeService] ${message}`, ...args);
+  }
+
+  /**
+   * Get user-configured providers and models from OpenCode server
+   * Uses GET /config/providers endpoint (only returns connected/configured providers)
+   */
+  async getProviders(): Promise<ConfigProvidersResponse> {
+    await this.init();
+
+    if (!this.client) {
+      throw new Error("OpenCode client not initialized");
+    }
+
+    return new Promise<ConfigProvidersResponse>((resolve, reject) => {
+      const urlObj = new URL(`${this.serverUrl}/config/providers`);
+
+      const req = http.request(
+        urlObj,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+          timeout: 10000,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+          res.on("end", () => {
+            const buffer = Buffer.concat(chunks);
+            const responseText = buffer.toString("utf-8");
+
+            if (res.statusCode && res.statusCode >= 400) {
+              reject(new Error(`Failed to fetch providers: ${res.statusCode}`));
+              return;
+            }
+
+            try {
+              const data = JSON.parse(responseText) as ConfigProvidersResponse;
+              resolve(data);
+            } catch {
+              reject(new Error("Failed to parse provider response"));
+            }
+          });
+        }
+      );
+
+      req.on("timeout", () => {
+        req.destroy();
+        reject(new Error("Request timed out while fetching providers"));
+      });
+
+      req.on("error", (err) => {
+        console.error("[OpenCodeService] Failed to fetch providers:", err);
+        reject(err);
+      });
+
+      req.end();
+    });
   }
 }

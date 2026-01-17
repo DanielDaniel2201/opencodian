@@ -6,10 +6,9 @@ import { ItemView, WorkspaceLeaf, setIcon, MarkdownRenderer, TFolder } from "obs
 import type OpencodianPlugin from "../../main";
 import {
   VIEW_TYPE_OPENCODIAN,
-  FREE_MODELS,
-  getModelLabel,
+  processProviders,
 } from "../../core/types";
-import type { ToolCallInfo, MentionInfo } from "../../core/types";
+import type { ToolCallInfo, MentionInfo, ProviderWithModels, ModelOption } from "../../core/types";
 import type { MentionContext } from "../../core/agent/OpenCodeService";
 import { FileMention } from "./FileMention";
 
@@ -35,6 +34,12 @@ export class OpencodianView extends ItemView {
   private modelDropdownEl: HTMLElement;
   private modelButtonEl: HTMLElement;
   private isModelDropdownOpen: boolean = false;
+
+  /** Two-level dropdown state */
+  private providers: ProviderWithModels[] = [];
+  private selectedProvider: ProviderWithModels | null = null;
+  private isLoadingProviders: boolean = false;
+  private providersLoaded: boolean = false;
 
   /** Map tool invocation IDs to their UI elements */
   private activeToolBlocks: Map<string, ToolBlock> = new Map();
@@ -1205,15 +1210,6 @@ export class OpencodianView extends ItemView {
       cls: "opencodian-model-btn",
     });
 
-    // Dynamic width based on longest model name
-    // We defer slightly to ensure styles are applied
-    window.requestAnimationFrame(() => {
-      const maxLabelWidth = this.calculateMaxModelLabelWidth();
-      if (maxLabelWidth > 0) {
-        this.modelButtonEl.style.setProperty("--model-label-width", `${maxLabelWidth}px`);
-      }
-    });
-
     this.updateModelDisplay();
 
     this.modelButtonEl.addEventListener("click", (e) => {
@@ -1226,7 +1222,6 @@ export class OpencodianView extends ItemView {
       cls: "opencodian-model-dropdown",
     });
     this.modelDropdownEl.style.display = "none";
-    this.renderModelOptions();
 
     // Close on outside click
     document.addEventListener("click", (e) => {
@@ -1242,9 +1237,10 @@ export class OpencodianView extends ItemView {
   /**
    * Update model button display
    */
-  private updateModelDisplay(): void {
+  private updateModelDisplay(labelOverride?: string): void {
     const currentModel = this.plugin.settings.model;
-    const label = getModelLabel(currentModel);
+    // Use override if provided, otherwise try to find from loaded providers
+    const label = labelOverride || this.findModelLabel(currentModel);
 
     this.modelButtonEl.empty();
 
@@ -1259,6 +1255,24 @@ export class OpencodianView extends ItemView {
   }
 
   /**
+   * Find model label from loaded providers or extract from model ID
+   */
+  private findModelLabel(modelId: string): string {
+    // Search in loaded providers
+    for (const provider of this.providers) {
+      const model = provider.models.find((m) => m.id === modelId);
+      if (model) return model.label;
+    }
+
+    // Fallback: extract model name from ID (provider/model-name -> model-name)
+    const parts = modelId.split("/");
+    if (parts.length === 2) {
+      return parts[1];
+    }
+    return modelId;
+  }
+
+  /**
    * Toggle model dropdown
    */
   private toggleModelDropdown(forceState?: boolean): void {
@@ -1267,26 +1281,222 @@ export class OpencodianView extends ItemView {
     this.modelDropdownEl.style.display = this.isModelDropdownOpen
       ? "flex"
       : "none";
+
+    if (this.isModelDropdownOpen) {
+      // Reset to provider list when opening
+      this.selectedProvider = null;
+      this.renderDropdownContent();
+      
+      // Load providers if not loaded yet
+      if (!this.providersLoaded && !this.isLoadingProviders) {
+        this.loadProviders();
+      }
+    }
   }
 
   /**
-   * Render model options in dropdown
+   * Load providers from OpenCode server
    */
-  private renderModelOptions(): void {
+  private async loadProviders(): Promise<void> {
+    if (this.isLoadingProviders) return;
+
+    this.isLoadingProviders = true;
+    this.renderDropdownContent();
+
+    try {
+      const response = await this.plugin.agentService.getProviders();
+      this.providers = processProviders(response);
+      this.providersLoaded = true;
+      console.log("[OpencodianView] Loaded providers:", this.providers.length);
+    } catch (error) {
+      console.error("[OpencodianView] Failed to load providers:", error);
+      // On error, show empty state - user needs to configure providers
+      this.providers = [];
+    } finally {
+      this.isLoadingProviders = false;
+      this.renderDropdownContent();
+    }
+  }
+
+  /**
+   * Render dropdown content based on current state
+   */
+  private renderDropdownContent(): void {
     this.modelDropdownEl.empty();
 
-    for (const model of FREE_MODELS) {
+    if (this.isLoadingProviders) {
+      this.renderLoadingState();
+      return;
+    }
+
+    if (this.selectedProvider) {
+      this.renderModelList(this.selectedProvider);
+    } else {
+      this.renderProviderList();
+    }
+  }
+
+  /**
+   * Render loading state
+   */
+  private renderLoadingState(): void {
+    const loadingEl = this.modelDropdownEl.createDiv({
+      cls: "opencodian-dropdown-loading",
+    });
+    loadingEl.textContent = "Loading...";
+  }
+
+  /**
+   * Render provider list (level 1)
+   */
+  private renderProviderList(): void {
+    // Check if no providers available
+    if (this.providers.length === 0) {
+      const emptyEl = this.modelDropdownEl.createDiv({
+        cls: "opencodian-dropdown-empty",
+      });
+      emptyEl.textContent = "No providers configured";
+      return;
+    }
+
+    // --- RECENT MODELS SECTION ---
+    const recentIds = this.plugin.settings.recentModels || [];
+    const recentModels: ModelOption[] = [];
+
+    // Find full model objects for recent IDs
+    if (recentIds.length > 0) {
+      for (const id of recentIds) {
+        // Skip if already found (dedupe in case setting has duplicates)
+        if (recentModels.some((m) => m.id === id)) continue;
+
+        for (const provider of this.providers) {
+          const found = provider.models.find((m) => m.id === id);
+          if (found) {
+            recentModels.push(found);
+            break;
+          }
+        }
+      }
+    }
+
+    if (recentModels.length > 0) {
+      const currentModel = this.plugin.settings.model;
+
+      for (const model of recentModels) {
+        const optionEl = this.modelDropdownEl.createDiv({
+          cls: `opencodian-dropdown-item opencodian-model-item ${
+            model.id === currentModel ? "active" : ""
+          }`,
+        });
+
+        // Use standard model styling but remove left padding since it's level 1
+        optionEl.style.paddingLeft = "12px";
+
+        const labelEl = optionEl.createSpan({ cls: "dropdown-item-label" });
+        labelEl.textContent = model.label;
+
+        // Add provider hint
+        const providerHint = optionEl.createSpan({ cls: "dropdown-item-count" });
+        providerHint.textContent = model.providerID;
+        providerHint.style.fontSize = "10px";
+        providerHint.style.marginLeft = "auto";
+        providerHint.style.marginRight = "0";
+
+        // Free badge
+        if (model.isFree && model.providerID === "opencode") {
+          const freeEl = optionEl.createSpan({ cls: "dropdown-item-badge free" });
+          freeEl.textContent = "Free";
+        }
+
+        optionEl.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          await this.selectModel(model.id, model.label);
+        });
+      }
+
+      this.modelDropdownEl.createDiv({ cls: "opencodian-dropdown-separator" });
+    }
+
+    // --- PROVIDERS SECTION ---
+    for (const provider of this.providers) {
+      // Skip providers with no models
+      if (provider.models.length === 0) continue;
+
       const optionEl = this.modelDropdownEl.createDiv({
-        cls: `opencodian-model-option ${
-          model.id === this.plugin.settings.model ? "active" : ""
+        cls: "opencodian-dropdown-item opencodian-provider-item",
+      });
+
+      // Provider icon
+      const iconEl = optionEl.createSpan({ cls: "dropdown-item-icon" });
+      setIcon(iconEl, provider.isConnected ? "check-circle" : "circle");
+
+      // Provider name
+      const labelEl = optionEl.createSpan({ cls: "dropdown-item-label" });
+      labelEl.textContent = provider.name;
+
+      // Model count badge
+      const countEl = optionEl.createSpan({ cls: "dropdown-item-count" });
+      countEl.textContent = `${provider.models.length}`;
+
+      // Chevron
+      const chevronEl = optionEl.createSpan({ cls: "dropdown-item-chevron" });
+      setIcon(chevronEl, "chevron-right");
+
+      optionEl.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.selectedProvider = provider;
+        this.renderDropdownContent();
+      });
+    }
+  }
+
+  /**
+   * Render model list for selected provider (level 2)
+   */
+  private renderModelList(provider: ProviderWithModels): void {
+    // Back button
+    const backEl = this.modelDropdownEl.createDiv({
+      cls: "opencodian-dropdown-back",
+    });
+
+    const backIconEl = backEl.createSpan({ cls: "dropdown-back-icon" });
+    setIcon(backIconEl, "arrow-left");
+
+    const backLabelEl = backEl.createSpan({ cls: "dropdown-back-label" });
+    backLabelEl.textContent = provider.name;
+
+    backEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.selectedProvider = null;
+      this.renderDropdownContent();
+    });
+
+    // Separator
+    this.modelDropdownEl.createDiv({ cls: "opencodian-dropdown-separator" });
+
+    // Model list
+    const currentModel = this.plugin.settings.model;
+
+    for (const model of provider.models) {
+      const optionEl = this.modelDropdownEl.createDiv({
+        cls: `opencodian-dropdown-item opencodian-model-item ${
+          model.id === currentModel ? "active" : ""
         }`,
       });
 
-      const labelEl = optionEl.createDiv({ cls: "model-option-label" });
+      // Model name
+      const labelEl = optionEl.createSpan({ cls: "dropdown-item-label" });
       labelEl.textContent = model.label;
 
-      optionEl.addEventListener("click", async () => {
-        await this.selectModel(model.id);
+      // Free badge - only for opencode provider
+      if (provider.id === "opencode" && model.isFree) {
+        const freeEl = optionEl.createSpan({ cls: "dropdown-item-badge free" });
+        freeEl.textContent = "Free";
+      }
+
+      optionEl.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        await this.selectModel(model.id, model.label);
       });
     }
   }
@@ -1294,35 +1504,17 @@ export class OpencodianView extends ItemView {
   /**
    * Select a model
    */
-  private async selectModel(modelId: string): Promise<void> {
+  private async selectModel(modelId: string, modelLabel: string): Promise<void> {
     this.plugin.settings.model = modelId;
+
+    // Update recent models
+    const recent = this.plugin.settings.recentModels || [];
+    const newRecent = [modelId, ...recent.filter((id) => id !== modelId)].slice(0, 5);
+    this.plugin.settings.recentModels = newRecent;
+
     await this.plugin.saveSettings();
 
-    this.updateModelDisplay();
-    this.renderModelOptions();
+    this.updateModelDisplay(modelLabel);
     this.toggleModelDropdown(false);
-  }
-
-  /**
-   * Calculate max width needed for model labels to prevent layout shifts
-   */
-  private calculateMaxModelLabelWidth(): number {
-    const temp = document.createElement("span");
-    temp.style.visibility = "hidden";
-    temp.style.position = "absolute";
-    temp.style.fontSize = "0.8em"; // Match .opencodian-model-btn
-    temp.style.fontWeight = "500";
-    // Append to container to inherit fonts
-    this.mainContainerEl.appendChild(temp);
-
-    let maxW = 0;
-    for (const m of FREE_MODELS) {
-      temp.textContent = m.label;
-      const w = temp.getBoundingClientRect().width;
-      if (w > maxW) maxW = w;
-    }
-    
-    temp.remove();
-    return Math.ceil(maxW) + 10; // +buffer
   }
 }

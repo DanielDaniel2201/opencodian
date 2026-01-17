@@ -104,6 +104,7 @@ For detailed information:
 - **Architecture & Project Structure**: See `references/architecture.md`
 - **SDK & Server API**: See `references/sdk-and-server.md`
 - **Events & Messages**: See `references/events-and-messages.md`
+- **Providers & Models**: See `references/providers-and-models.md`
 - **CLI Commands**: See `references/cli.md`
 
 ## Common Patterns
@@ -140,3 +141,16 @@ const session = await client.session.get({ path: { id: sessionId } })
 // Abort running session
 await client.session.abort({ path: { id: sessionId } })
 ```
+
+### Getting Available Providers & Models
+```typescript
+// Get user's configured providers (env vars, API keys, plugins, free models)
+const { providers, default: defaults } = await client.config.providers()
+
+for (const provider of providers) {
+  console.log(`${provider.name}: ${Object.keys(provider.models).length} models`)
+  // provider.source: "env" | "config" | "custom" | "api"
+}
+```
+
+See `references/providers-and-models.md` for detailed provider detection logic.
