@@ -432,6 +432,27 @@ export class OpenCodeService {
         }
       );
 
+      // Track connection errors
+      let connectionError: Error | null = null;
+      let isStreamEnded = false;
+      
+      response.on("error", (err) => {
+        console.error("[OpenCodeService] Event stream error:", err);
+        connectionError = new NetworkError(err);
+      });
+      
+      response.on("close", () => {
+        console.log("[OpenCodeService] Event stream closed", { aborted: abortSignal.aborted, hasError: !!connectionError, ended: isStreamEnded });
+        if (!abortSignal.aborted && !connectionError && !isStreamEnded) {
+          // Unexpected close - network might have dropped
+          connectionError = new NetworkError(new Error("Connection closed unexpectedly"));
+        }
+      });
+      
+      response.on("end", () => {
+        isStreamEnded = true;
+      });
+
       const rl = readline.createInterface({
         input: response,
         terminal: false,
@@ -440,7 +461,16 @@ export class OpenCodeService {
       let currentData = "";
 
       for await (const line of rl) {
-        if (abortSignal.aborted) break;
+        // Check for abort or errors before processing each line
+        if (abortSignal.aborted) {
+          console.log("[OpenCodeService] Stream aborted by signal");
+          break;
+        }
+        if (connectionError) {
+          console.error("[OpenCodeService] Throwing connection error:", connectionError);
+          throw connectionError;
+        }
+        
         const trimmed = line.trim();
         if (!trimmed) {
           if (currentData) {
@@ -457,6 +487,11 @@ export class OpenCodeService {
         if (line.startsWith("data:")) {
           currentData = line.slice(5).trim();
         }
+      }
+      
+      // Check for connection error after loop ends
+      if (connectionError && !abortSignal.aborted) {
+        throw connectionError;
       }
     })();
   }
@@ -611,9 +646,15 @@ export class OpenCodeService {
 
       // Track seen tool calls to avoid duplicates
       const completedTools = new Set<string>();
+      let isSessionIdle = false;
 
       for await (const event of eventStream) {
+        // Check for abort signal with detailed logging
         if (abortSignal.aborted) {
+          console.log("[OpenCodeService] Query aborted", { 
+            hasReason: !!abortSignal.reason, 
+            reasonType: abortSignal.reason?.constructor?.name 
+          });
            // If we have a specific abort reason (like TimeoutError), throw it to be caught below
            if (abortSignal.reason instanceof Error) {
              throw abortSignal.reason;
@@ -630,6 +671,7 @@ export class OpenCodeService {
           event.type === "session.idle" &&
           event.properties?.sessionID === sessionId
         ) {
+          isSessionIdle = true;
           break;
         }
 
@@ -718,6 +760,12 @@ export class OpenCodeService {
         }
       }
 
+      if (!isSessionIdle) {
+        const errorMsg = "Stream ended prematurely (no session.idle received)";
+        console.error(`[OpenCodeService] ${errorMsg}`);
+        throw new NetworkError(new Error(errorMsg));
+      }
+
       await promptPromise;
       
       // Save debug turn
@@ -731,8 +779,16 @@ export class OpenCodeService {
     } catch (error) {
       clearTimeoutHandler();
       
+      console.error("[OpenCodeService] Query error:", {
+        errorType: error?.constructor?.name,
+        message: error instanceof Error ? error.message : String(error),
+        isTimeout: isTimeoutTriggered,
+        isUserCancellation: error instanceof UserCancellationError,
+      });
+      
       // Handle known error types
       if (error instanceof UserCancellationError) {
+        console.log("[OpenCodeService] User cancelled - ending gracefully");
         yield { type: "done" }; // Graceful exit
         return;
       }
@@ -742,19 +798,28 @@ export class OpenCodeService {
       if (error instanceof OpencodianError) {
         finalError = error;
       } else if (isTimeoutTriggered) {
-        finalError = new TimeoutError(initialTimeout);
+        finalError = new TimeoutError(
+          receivedMeaningfulEvent ? inactivityTimeout : initialTimeout, 
+          receivedMeaningfulEvent ? "inactivity" : "initial"
+        );
       } else {
-        // Map native errors to OpencodianErrors
+        // Map native errors to OpencodianErrors with user-friendly messages
         const msg = String(error);
-        if (msg.includes("ECONNREFUSED") || msg.includes("Network")) {
-          finalError = new NetworkError(error instanceof Error ? error : new Error(msg));
+        const errMsg = error instanceof Error ? error.message : msg;
+        
+        if (msg.includes("ECONNREFUSED") || msg.includes("ENOTFOUND")) {
+          finalError = new NetworkError(new Error("Cannot connect to OpenCode server"));
+        } else if (msg.includes("ETIMEDOUT") || msg.includes("timeout")) {
+          finalError = new NetworkError(new Error("Connection timed out"));
+        } else if (msg.includes("Network") || msg.includes("Connection closed")) {
+          finalError = new NetworkError(new Error("Network connection lost"));
         } else {
            // Default to generic server/unknown error
-           finalError = new ServerError(500, error instanceof Error ? error.message : "Unknown error");
+           finalError = new ServerError(500, errMsg || "Unknown error");
         }
       }
       
-      console.error("[OpenCodeService] Query error:", finalError);
+      console.error("[OpenCodeService] Yielding error to UI:", finalError.message);
       
       // Save debug turn even on error
       await this.saveDebugTurn({

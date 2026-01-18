@@ -3,9 +3,10 @@
  * 
  * Detects "@" in input and shows file suggestions from the vault.
  * Selected files appear as chips in a separate bar above the input.
+ * Only shows files that are visible in Obsidian (markdown files and folders).
  */
 
-import { TFolder, setIcon, type App } from "obsidian";
+import { TFolder, TFile, setIcon, type App } from "obsidian";
 
 /** Represents a mentionable file or folder */
 export interface MentionItem {
@@ -26,8 +27,11 @@ export class FileMention {
   private mentionStart: number = -1;
   private isOpen: boolean = false;
   
-  /** Currently selected mentions */
+  /** Currently selected mentions (manually added by user) */
   private mentions: MentionItem[] = [];
+  
+  /** Auto-added active file mention (separate from manual mentions) */
+  private activeFileMention: MentionItem | null = null;
 
   constructor(app: App, inputEl: HTMLTextAreaElement, containerEl: HTMLElement) {
     this.app = app;
@@ -47,32 +51,39 @@ export class FileMention {
     this.createSuggestionsEl();
   }
 
-  /** Load files and folders from vault, excluding hidden ones */
+  /** Load files and folders from vault - all Obsidian-visible files (not just markdown) */
   private loadItems(): void {
-    const allFiles = this.app.vault.getAllLoadedFiles();
     const items: MentionItem[] = [];
     const seenFolders = new Set<string>();
 
+    // Use vault.getFiles() to get ALL files Obsidian tracks (md, canvas, excalidraw, etc.)
+    // This excludes hidden files (starting with .) that Obsidian doesn't show
+    const allFiles = this.app.vault.getFiles();
+    
     for (const file of allFiles) {
       if (this.isHiddenPath(file.path)) continue;
-      if (file.path === "/" || file.path === "") continue;
-
-      if (file instanceof TFolder) {
-        if (!seenFolders.has(file.path)) {
-          seenFolders.add(file.path);
+      
+      // Add parent folders
+      const parts = file.path.split("/");
+      let folderPath = "";
+      for (let i = 0; i < parts.length - 1; i++) {
+        folderPath = folderPath ? `${folderPath}/${parts[i]}` : parts[i];
+        if (!seenFolders.has(folderPath) && !this.isHiddenPath(folderPath)) {
+          seenFolders.add(folderPath);
           items.push({
-            path: file.path,
-            name: file.name,
+            path: folderPath,
+            name: parts[i],
             isFolder: true,
           });
         }
-      } else {
-        items.push({
-          path: file.path,
-          name: file.name,
-          isFolder: false,
-        });
       }
+      
+      // Add file
+      items.push({
+        path: file.path,
+        name: file.name,
+        isFolder: false,
+      });
     }
 
     items.sort((a, b) => {
@@ -113,42 +124,101 @@ export class FileMention {
     if (!this.chipsBarEl) return;
     this.chipsBarEl.innerHTML = "";
 
-    if (this.mentions.length === 0) {
+    // Combine active file mention (if any) with manual mentions
+    const allMentions: MentionItem[] = [];
+    if (this.activeFileMention) {
+      allMentions.push(this.activeFileMention);
+    }
+    // Add manual mentions (excluding the active file if it was manually added too)
+    for (const m of this.mentions) {
+      if (!this.activeFileMention || m.path !== this.activeFileMention.path) {
+        allMentions.push(m);
+      }
+    }
+
+    if (allMentions.length === 0) {
       this.chipsBarEl.style.display = "none";
       return;
     }
 
     this.chipsBarEl.style.display = "flex";
 
-    for (const item of this.mentions) {
+    for (let i = 0; i < allMentions.length; i++) {
+      const item = allMentions[i];
+      const isActiveFile = this.activeFileMention && item.path === this.activeFileMention.path;
+      
       const chipEl = document.createElement("div");
-      chipEl.className = "opencodian-mention-chip";
+      chipEl.className = "opencodian-mention-chip opencodian-mention-chip-clickable";
+      if (isActiveFile) {
+        chipEl.classList.add("opencodian-mention-chip-active");
+      }
+
+      // Click to open file (on icon and name area)
+      const clickArea = document.createElement("span");
+      clickArea.className = "opencodian-mention-chip-click-area";
+      clickArea.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.openFile(item.path);
+      });
 
       // Icon
       const iconEl = document.createElement("span");
       iconEl.className = "opencodian-mention-chip-icon";
       setIcon(iconEl, item.isFolder ? "folder" : "file-text");
-      chipEl.appendChild(iconEl);
+      clickArea.appendChild(iconEl);
 
       // Name only (not full path)
       const nameEl = document.createElement("span");
       nameEl.className = "opencodian-mention-chip-name";
       nameEl.textContent = item.name;
       nameEl.title = item.path; // Show full path on hover
-      chipEl.appendChild(nameEl);
+      clickArea.appendChild(nameEl);
 
-      // Remove button
+      chipEl.appendChild(clickArea);
+
+      // Remove button (for active file, removes it from auto-tracking; for manual, removes from list)
       const removeEl = document.createElement("span");
       removeEl.className = "opencodian-mention-chip-remove";
       setIcon(removeEl, "x");
       removeEl.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this.removeMention(item);
+        if (isActiveFile) {
+          this.activeFileMention = null;
+        } else {
+          this.removeMention(item);
+        }
+        this.renderChips();
       });
       chipEl.appendChild(removeEl);
 
       this.chipsBarEl.appendChild(chipEl);
+    }
+  }
+
+  /** Open a file in Obsidian */
+  openFile(path: string): void {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!file) return;
+    
+    if (file instanceof TFile) {
+      // Open file in a new leaf
+      const leaf = this.app.workspace.getLeaf(false);
+      if (leaf) {
+        leaf.openFile(file);
+      }
+    } else if (file instanceof TFolder) {
+      // For folders, reveal in file explorer
+      const fileExplorer = this.app.workspace.getLeavesOfType("file-explorer")[0];
+      if (fileExplorer) {
+        this.app.workspace.revealLeaf(fileExplorer);
+        // Try to expand the folder in the file explorer
+        const explorerView = fileExplorer.view as any;
+        if (explorerView?.revealInFolder) {
+          explorerView.revealInFolder(file);
+        }
+      }
     }
   }
 
@@ -362,14 +432,6 @@ export class FileMention {
     this.mentionStart = -1;
   }
 
-  /** Get current mentions and clear them */
-  getMentionsAndClear(): MentionItem[] {
-    const result = [...this.mentions];
-    this.mentions = [];
-    this.renderChips();
-    return result;
-  }
-
   /** Get current mention paths */
   getMentionPaths(): string[] {
     return this.mentions.map(m => m.path);
@@ -382,6 +444,128 @@ export class FileMention {
 
   refresh(): void {
     this.loadItems();
+  }
+
+  /** Add a mention programmatically (e.g., for active file tracking) */
+  addMention(path: string): boolean {
+    // Check if already mentioned
+    if (this.mentions.find(m => m.path === path)) {
+      return false;
+    }
+    
+    // Find item in our list
+    const item = this.items.find(i => i.path === path);
+    if (!item) {
+      // Item not in our markdown files list - could be a non-markdown file
+      // Create a basic item for it
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!file) return false;
+      
+      this.mentions.push({
+        path: path,
+        name: file.name,
+        isFolder: file instanceof TFolder,
+      });
+    } else {
+      this.mentions.push(item);
+    }
+    
+    this.renderChips();
+    return true;
+  }
+
+  /** Set the active file mention (REPLACES previous active file, not accumulate) */
+  setActiveFileMention(path: string | null): void {
+    if (!path) {
+      // No active file - clear the active file mention
+      this.activeFileMention = null;
+      this.renderChips();
+      return;
+    }
+    
+    // If it's the same file, do nothing
+    if (this.activeFileMention && this.activeFileMention.path === path) {
+      return;
+    }
+    
+    // Create new active file mention item
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!file) {
+      this.activeFileMention = null;
+      this.renderChips();
+      return;
+    }
+    
+    this.activeFileMention = {
+      path: path,
+      name: file.name,
+      isFolder: file instanceof TFolder,
+    };
+    
+    this.renderChips();
+  }
+
+  /** Clear all mentions (both manual and active file) */
+  clearMentions(): void {
+    this.mentions = [];
+    this.activeFileMention = null;
+    this.renderChips();
+  }
+
+  /** Get all mentions (active file + manual) and clear them */
+  getMentionsAndClear(): MentionItem[] {
+    const result: MentionItem[] = [];
+    
+    // Add active file first
+    if (this.activeFileMention) {
+      result.push(this.activeFileMention);
+    }
+    
+    // Add manual mentions (excluding active file if duplicated)
+    for (const m of this.mentions) {
+      if (!this.activeFileMention || m.path !== this.activeFileMention.path) {
+        result.push(m);
+      }
+    }
+    
+    // Clear all
+    this.mentions = [];
+    this.activeFileMention = null;
+    this.renderChips();
+    
+    return result;
+  }
+
+  /** Create a clickable chip element for use outside this component (e.g., in message bubbles) */
+  static createChipElement(
+    app: App,
+    path: string,
+    name: string,
+    isFolder: boolean,
+    openFile: (path: string) => void
+  ): HTMLElement {
+    const chipEl = document.createElement("div");
+    chipEl.className = "message-mention-chip message-mention-chip-clickable";
+    chipEl.style.cursor = "pointer";
+    chipEl.title = path;
+    
+    chipEl.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openFile(path);
+    });
+
+    const iconEl = document.createElement("span");
+    iconEl.className = "message-mention-icon";
+    setIcon(iconEl, isFolder ? "folder" : "file-text");
+    chipEl.appendChild(iconEl);
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "message-mention-name";
+    nameEl.textContent = name;
+    chipEl.appendChild(nameEl);
+
+    return chipEl;
   }
 
   destroy(): void {

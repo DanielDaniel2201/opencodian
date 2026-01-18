@@ -191,6 +191,21 @@ export class OpencodianView extends ItemView {
     this.inputEl.addEventListener("input", () => this.adjustInputHeight());
     this.adjustInputHeight();
 
+    // Register for file-open events to auto-update active file mention
+    this.registerEvent(
+      this.plugin.app.workspace.on("file-open", (file) => {
+        if (this.fileMention) {
+          this.fileMention.setActiveFileMention(file ? file.path : null);
+        }
+      })
+    );
+
+    // Set initial active file if one is open
+    const activeFile = this.plugin.app.workspace.getActiveFile();
+    if (this.fileMention) {
+      this.fileMention.setActiveFileMention(activeFile ? activeFile.path : null);
+    }
+
     // Initial render
     this.renderHistoryList();
     await this.loadConversation();
@@ -522,13 +537,14 @@ export class OpencodianView extends ItemView {
     // Reset streaming state
     this.activeToolBlocks.clear();
 
-    try {
-      let fullResponse = "";
-      const toolCallsById = new Map<string, ToolCallInfo>();
+    // Track response state at outer scope so catch block can access
+    let fullResponse = "";
+    const toolCallsById = new Map<string, ToolCallInfo>();
+    let mdRenderTimer: number | null = null;
 
+    try {
       // Markdown streaming: render incrementally with a debounce to preserve the
       // "streaming" feel without re-rendering on every token.
-      let mdRenderTimer: number | null = null;
       let mdRenderInFlight = false;
       let mdRenderQueued = false;
       let lastRendered = "";
@@ -615,11 +631,8 @@ export class OpencodianView extends ItemView {
           this.scrollToBottom();
         } else if (chunk.type === "error") {
           clearWorking();
-          // Remove the placeholder and add fresh error message
-          if (assistantMsgEl.parentElement) {
-            assistantMsgEl.remove();
-          }
-          this.addMessage("assistant", `❗ ${chunk.content}`);
+          // Append error to content (works for both partial and empty responses)
+          this.appendError(contentEl, chunk.content);
           this.scrollToBottom();
         } else if (chunk.type === "done") {
           clearWorking();
@@ -645,18 +658,55 @@ export class OpencodianView extends ItemView {
         }
       }
     } catch (error) {
-      // Remove the placeholder assistant message entirely
-      if (assistantMsgEl.parentElement) {
-        assistantMsgEl.remove();
+      clearWorking();
+      
+      // Get the error message
+      const errorMsg = error instanceof Error ? error.message : "Unknown error";
+      
+      console.error("[OpencodianView] Error during message generation:", {
+        error: errorMsg,
+        hasPartialResponse: fullResponse.trim().length > 0,
+      });
+      
+      // Check if we have accumulated any response content
+      const hasPartialResponse = fullResponse.trim().length > 0;
+      
+      if (hasPartialResponse) {
+        // Preserve the partial response - render what we have
+        if (mdRenderTimer !== null) {
+          window.clearTimeout(mdRenderTimer);
+          mdRenderTimer = null;
+        }
+        await this.renderMarkdown(fullResponse, contentEl);
+      } else {
+        // No content yet - clear the placeholder
+        contentEl.empty();
       }
       
-      // Add a fresh error message as AI response
-      const errorMsg = error instanceof Error ? error.message : "Unknown error";
-      this.addMessage("assistant", `❗ ${errorMsg}`);
+      // Always append error using unified method
+      this.appendError(contentEl, errorMsg);
+      
+      // Save the partial response to conversation (if any content exists)
+      if (conv && hasPartialResponse) {
+        conv.messages.push({
+          role: "assistant",
+          content: fullResponse,
+          timestamp: Date.now(),
+          toolCalls: Array.from(toolCallsById.values()),
+        });
+        await this.plugin.saveConversation(conv);
+      }
+      
       this.scrollToBottom();
       
-      // Reset generating state on error
+      // CRITICAL: Always reset generating state on error
       this.setGeneratingState(false);
+    } finally {
+      // Ensure generating state is always reset, even if error handling fails
+      if (this.isGenerating) {
+        console.warn("[OpencodianView] Generating state still active in finally block - forcing reset");
+        this.setGeneratingState(false);
+      }
     }
   }
 
@@ -675,15 +725,13 @@ export class OpencodianView extends ItemView {
   }
 
   /**
-   * Show error message in content area with red emoji
+   * Append error message to content area with left-border style.
+   * This is the unified error display method - all errors flow through here.
    */
-  private showErrorInContent(contentEl: HTMLElement, message: string): void {
-    contentEl.empty();
-    contentEl.addClass("opencodian-error-content");
-    
+  private appendError(contentEl: HTMLElement, message: string): void {
     const errorEl = document.createElement("div");
     errorEl.className = "opencodian-error-message";
-    errorEl.innerHTML = `<span class="opencodian-error-icon">&#10071;</span> ${message}`;
+    errorEl.textContent = message;
     contentEl.appendChild(errorEl);
   }
 
@@ -723,14 +771,22 @@ export class OpencodianView extends ItemView {
     if (role === "user" && mentions && mentions.length > 0) {
       const mentionsEl = bubbleEl.createDiv({ cls: "message-mentions" });
       for (const mention of mentions) {
-        const chipEl = mentionsEl.createDiv({ cls: "message-mention-chip" });
+        const chipEl = mentionsEl.createDiv({ cls: "message-mention-chip message-mention-chip-clickable" });
+        chipEl.title = mention.path;
+        chipEl.style.cursor = "pointer";
+        
+        // Make chip clickable to open file
+        chipEl.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.openMentionedFile(mention.path, mention.isFolder);
+        });
         
         const iconEl = chipEl.createSpan({ cls: "message-mention-icon" });
         setIcon(iconEl, mention.isFolder ? "folder" : "file-text");
         
         const nameEl = chipEl.createSpan({ cls: "message-mention-name" });
         nameEl.textContent = mention.name;
-        nameEl.title = mention.path; // Full path on hover
       }
     }
     
@@ -920,6 +976,15 @@ export class OpencodianView extends ItemView {
     const welcomeEl = this.messagesEl.querySelector(".opencodian-welcome");
     if (welcomeEl) {
       welcomeEl.remove();
+    }
+  }
+
+  /**
+   * Open a mentioned file or folder in Obsidian
+   */
+  private openMentionedFile(path: string, _isFolder: boolean): void {
+    if (this.fileMention) {
+      this.fileMention.openFile(path);
     }
   }
 
