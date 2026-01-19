@@ -1372,7 +1372,6 @@ export class OpencodianView extends ItemView {
       const response = await this.plugin.agentService.getProviders();
       this.providers = processProviders(response);
       this.providersLoaded = true;
-      console.log("[OpencodianView] Loaded providers:", this.providers.length);
     } catch (error) {
       console.error("[OpencodianView] Failed to load providers:", error);
       // On error, show empty state - user needs to configure providers

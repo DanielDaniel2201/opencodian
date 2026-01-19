@@ -248,7 +248,9 @@ export class OpenCodeService {
         cwd: vaultDirectory ?? undefined,
       });
 
-      this.client = this.createClient(server.url, vaultDirectory);
+      // Don't pass directory to SDK - it puts it in HTTP headers which breaks for non-ASCII paths.
+      // The server is already started with cwd set to the vault directory.
+      this.client = this.createClient(server.url);
       this.serverUrl = server.url;
       this.serverClose = () => server.close();
 
@@ -293,7 +295,6 @@ export class OpenCodeService {
       cwd: options.cwd,
       env: {
         ...process.env,
-        OPENCODE_CONFIG_CONTENT: JSON.stringify({}),
       },
     });
 
