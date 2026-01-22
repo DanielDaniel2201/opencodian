@@ -640,10 +640,21 @@ export class OpencodianView extends ItemView {
             window.clearTimeout(mdRenderTimer);
             mdRenderTimer = null;
           }
-          await this.renderMarkdown(fullResponse, contentEl);
-          hasRenderedMarkdown = true;
 
-          if (conv && fullResponse) {
+          // If we only rendered plain text during streaming, the last markdown render
+          // might have been skipped. Render once at the end.
+          if (fullResponse) {
+            await this.renderMarkdown(fullResponse, contentEl);
+            hasRenderedMarkdown = true;
+          }
+
+          // If we received no response at all (and no explicit error chunk), show a user-visible error.
+          if (!fullResponse.trim()) {
+            this.appendError(contentEl, "No response received. Please try again.");
+          }
+
+          // Persist the assistant message even if empty (so users can see the error block in history)
+          if (conv) {
             conv.messages.push({
               role: "assistant",
               content: fullResponse,
@@ -652,7 +663,7 @@ export class OpencodianView extends ItemView {
             });
             await this.plugin.saveConversation(conv);
           }
-          
+
           // Reset generating state
           this.setGeneratingState(false);
         }

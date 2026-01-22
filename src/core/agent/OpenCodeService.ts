@@ -554,8 +554,17 @@ export class OpenCodeService {
     // Start event subscription
     const eventStream = this.subscribeToEvents(abortSignal);
 
-    // Wait for server.connected before sending prompt
-    const firstEvent = await eventStream.next();
+    // Wait for server.connected before sending prompt.
+    // This CAN hang if the event stream never yields, so it must respect the abort signal.
+    const firstEvent = await Promise.race([
+      eventStream.next(),
+      new Promise<IteratorResult<any>>((_, reject) => {
+        abortSignal.addEventListener("abort", () => {
+          const reason = abortSignal.reason;
+          reject(reason instanceof Error ? reason : new Error("Aborted"));
+        });
+      }),
+    ]);
     if (firstEvent.done) {
       throw new Error("Event stream closed unexpectedly");
     }
@@ -640,9 +649,13 @@ export class OpenCodeService {
     });
 
     try {
-      // Catch prompt errors
+      // If the prompt request itself fails, we should abort the whole query
+      // so the UI can show an error instead of hanging forever.
       promptPromise.catch((err) => {
         console.error("[OpenCode] Prompt error:", err);
+        if (this.abortController && !abortSignal.aborted) {
+          this.abortController.abort(new ServerError(500, err instanceof Error ? err.message : String(err)));
+        }
       });
 
       // Track seen tool calls to avoid duplicates
