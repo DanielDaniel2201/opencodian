@@ -5,8 +5,9 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
-    Arial, sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
   --bubble-user-bg: var(--background-secondary-alt);
   --bubble-ai-bg: transparent;
   --text-primary: var(--text-normal);
@@ -56,7 +57,9 @@
   cursor: pointer;
   color: var(--text-muted);
   background-color: transparent;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 
 .opencodian-action-btn:hover,
@@ -123,6 +126,8 @@
   color: var(--text-normal);
   align-self: flex-end;
   border-bottom-right-radius: 4px;
+  width: 100%;
+  max-width: 100%;
 }
 
 .message-user .message-role {
@@ -136,6 +141,11 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  width: 100%;
+}
+
+.message-user .message-content {
+  text-align: right;
 }
 
 .message-user .message-mentions {
@@ -168,6 +178,148 @@
   word-wrap: break-word;
   user-select: text;
   white-space: pre-wrap; /* Preserve newlines for raw text output */
+}
+
+/* ========== USER MESSAGE HOTZONE + ACTIONS ========== */
+.opencodian-message-hotzone {
+  width: 100%;
+  position: relative;
+}
+
+.opencodian-message-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  height: 22px; /* reserved line space */
+  margin-top: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.message-user .opencodian-message-hotzone:hover .opencodian-message-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.opencodian-message-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+  background-color: transparent;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.opencodian-message-action-btn:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.opencodian-message-action-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ========== INLINE EDITOR (ChatGPT-style edit in place) ========== */
+.opencodian-inline-editor {
+  width: 70%;
+  margin-left: auto; /* Right-align to match user message position */
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  margin-top: 8px;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.opencodian-inline-editor:focus-within {
+  border-color: var(--interactive-accent);
+}
+
+.opencodian-inline-editor textarea {
+  width: 100%;
+  resize: none;
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  padding: 10px !important;
+  color: var(--text-normal);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  min-height: 48px;
+  max-height: 200px;
+  box-shadow: none !important;
+}
+
+.opencodian-inline-editor textarea:hover,
+.opencodian-inline-editor textarea:focus {
+  outline: none !important;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.opencodian-inline-editor textarea::placeholder {
+  color: var(--text-muted);
+}
+
+/* Toolbar matches main input toolbar exactly */
+.opencodian-inline-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0 0 0;
+  background: transparent;
+  width: 70%;
+  margin-left: auto;
+}
+
+.opencodian-inline-editor-actions .opencodian-inline-editor-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+  background-color: transparent;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+  user-select: none;
+  border: none;
+}
+
+.opencodian-inline-editor-actions .opencodian-inline-editor-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.opencodian-inline-editor-actions .opencodian-inline-editor-btn:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.opencodian-inline-editor-actions .opencodian-inline-editor-btn.primary {
+  color: var(--text-muted);
+}
+
+.opencodian-inline-editor-actions .opencodian-inline-editor-btn.primary:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
 }
 
 /* When we render markdown, switch back to normal whitespace; otherwise inherited
@@ -280,7 +432,8 @@
 }
 
 @keyframes breathe {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 0.3;
   }
   50% {
@@ -500,7 +653,9 @@
   border: none !important;
   border-radius: 4px;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
   box-shadow: none !important;
   outline: none !important;
 }
@@ -598,7 +753,9 @@
 }
 
 .opencodian-model-option.active {
-  background-color: var(--background-modifier-hover); /* More subtle active state */
+  background-color: var(
+    --background-modifier-hover
+  ); /* More subtle active state */
   color: var(--text-normal);
   font-weight: 500;
 }
@@ -631,8 +788,14 @@
 }
 
 @keyframes dropdownFadeIn {
-  from { opacity: 0; transform: translateY(-2px); } /* Subtle movement */
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  } /* Subtle movement */
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .dropdown-list {
@@ -644,7 +807,7 @@
 }
 
 .dropdown-list::-webkit-scrollbar {
-  width: 4px; 
+  width: 4px;
 }
 .dropdown-list::-webkit-scrollbar-thumb {
   background-color: var(--background-modifier-border);
@@ -668,7 +831,9 @@
 }
 
 .conversation-item.active {
-  background-color: var(--background-modifier-active-hover); /* Native active color */
+  background-color: var(
+    --background-modifier-active-hover
+  ); /* Native active color */
 }
 
 .conversation-content {
@@ -713,12 +878,12 @@
   padding: 2px;
   border-radius: 4px;
   z-index: 20;
-  
+
   /* Solid background instead of gradient/blur */
   background-color: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
-  box-shadow: -2px 0 5px rgba(0,0,0,0.05);
-  
+  box-shadow: -2px 0 5px rgba(0, 0, 0, 0.05);
+
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.1s ease;
@@ -731,7 +896,7 @@
   /* Match the item hover background */
   background-color: var(--background-modifier-hover);
   border-color: transparent;
-  box-shadow: none; 
+  box-shadow: none;
 }
 
 .conversation-item:hover .conversation-action-btn {
@@ -803,7 +968,8 @@
   text-align: center;
   padding: 20px;
   min-height: 200px;
-  font-family: 'Copernicus', 'Tiempos Headline', Georgia, 'Times New Roman', serif;
+  font-family:
+    "Copernicus", "Tiempos Headline", Georgia, "Times New Roman", serif;
   font-size: 28px;
   font-weight: 300;
   color: var(--text-muted);
@@ -972,7 +1138,9 @@
 /* Clickable mention chips */
 .message-mention-chip-clickable {
   cursor: pointer;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
 }
 
 .message-mention-chip-clickable:hover {
@@ -1171,5 +1339,3 @@
   background-color: rgba(var(--color-green-rgb), 0.15);
   color: var(--text-success);
 }
-
-

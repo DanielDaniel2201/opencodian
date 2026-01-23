@@ -3,8 +3,21 @@
  */
 
 export interface ChatMessage {
-  role: 'user' | 'assistant';
+  /** Stable unique identifier for UI operations (edit/regenerate). */
+  id: string;
+  role: "user" | "assistant";
+  /**
+   * Message kind.
+   * - `message`: regular user/assistant chat content.
+   * - `error`: legacy format (standalone error message in history).
+   */
+  type?: "message" | "error";
   content: string;
+  /**
+   * User-visible errors that occurred during this assistant turn.
+   * Stored separately so history can render them as error blocks.
+   */
+  errors?: string[];
   timestamp: number;
   images?: ImageAttachment[];
   /**

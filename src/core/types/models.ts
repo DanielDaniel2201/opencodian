@@ -119,18 +119,6 @@ export const FREE_MODELS: ModelOption[] = [
     providerID: "opencode",
     isFree: true,
   },
-  {
-    id: "opencode/minimax-m2.1-free",
-    label: "MiniMax M2.1",
-    providerID: "opencode",
-    isFree: true,
-  },
-  {
-    id: "opencode/glm-4.7-free",
-    label: "GLM 4.7",
-    providerID: "opencode",
-    isFree: true,
-  },
 ];
 
 /** Default model */
@@ -147,9 +135,15 @@ export function getModelLabel(id: string): string {
   return model?.label || id;
 }
 
-/** Check if model is free (cost.input === 0) */
+/**
+ * Check if model is free.
+ *
+ * OpenCode's providers list may omit `cost` or report zeros.
+ * We only show the Free badge for a small allowlist.
+ */
 export function isModelFree(model: ProviderModel): boolean {
-  return !model.cost || model.cost.input === 0;
+  const id = `${model.providerID}/${model.id}`;
+  return id === "opencode/big-pickle" || id === "opencode/grok-code";
 }
 
 /** Convert API model to UI model option */
@@ -169,7 +163,9 @@ export function processProviders(
   const result: ProviderWithModels[] = [];
 
   for (const provider of response.providers) {
-    const models = Object.values(provider.models).map(toModelOption);
+    const models = Object.values(provider.models)
+      .filter((m) => !(provider.id === "opencode" && m.id.includes("gpt-5-nano")))
+      .map(toModelOption);
 
     // Sort models: Free first, then active/other, then by name
     models.sort((a, b) => {
