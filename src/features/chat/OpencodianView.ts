@@ -10,6 +10,7 @@ import {
   TFolder,
   Notice,
 } from "obsidian";
+
 import type OpencodianPlugin from "../../main";
 import { VIEW_TYPE_OPENCODIAN, processProviders } from "../../core/types";
 import type {
@@ -256,7 +257,7 @@ export class OpencodianView extends ItemView {
 
     listContainer.empty();
 
-     const conversations = this.plugin.getConversations();
+    const conversations = this.plugin.getConversations();
     const activeId = this.plugin.settings.activeConversationId;
 
     for (const conv of conversations) {
@@ -390,28 +391,31 @@ export class OpencodianView extends ItemView {
     await this.loadConversation();
   }
 
-   private async loadConversation(
-     scrollToBottom: boolean = true,
-   ): Promise<void> {
-     const meta = this.plugin.getConversations().find(
-       (c) => c.id === this.plugin.settings.activeConversationId,
-     );
- 
-     const convId = meta?.id ?? this.plugin.settings.activeConversationId;
-     const conv = convId ? await this.plugin.loadConversation(convId) : null;
-     this.currentConversation = conv;
- 
-     this.messagesEl.empty();
- 
-     if (!conv || conv.messages.length === 0) {
-       this.showWelcomeMessage();
-       return;
-     }
+  private async loadConversation(
+    scrollToBottom: boolean = true,
+  ): Promise<void> {
+    const meta = this.plugin.getConversations().find(
+      (c) => c.id === this.plugin.settings.activeConversationId,
+    );
 
+    const convId = meta?.id ?? this.plugin.settings.activeConversationId;
+    const conv = convId ? await this.plugin.loadConversation(convId) : null;
+    this.currentConversation = conv;
 
+    this.messagesEl.empty();
+
+    if (!conv || conv.messages.length === 0) {
+      this.showWelcomeMessage();
+      return;
+    }
 
     for (let idx = 0; idx < conv.messages.length; idx++) {
       const msg = conv.messages[idx];
+
+      if (msg.role === "assistant" && msg.error) {
+        this.addErrorMessage(msg.error);
+        continue;
+      }
 
       // Old conversations are intentionally not supported.
       if (msg.role === "assistant" && (!msg.items || msg.items.length === 0)) {
@@ -728,7 +732,20 @@ export class OpencodianView extends ItemView {
           clearWorking();
 
           this.addErrorMessage(chunk.content);
+
+          if (conv) {
+            conv.messages.push({
+              id: this.createMessageId(),
+              role: "assistant",
+              type: "message",
+              error: chunk.content,
+              timestamp: Date.now(),
+            });
+            await this.plugin.saveConversation(conv);
+          }
+
           this.scrollToBottom();
+          this.setGeneratingState(false);
           continue;
         }
 
@@ -741,16 +758,29 @@ export class OpencodianView extends ItemView {
             this.addErrorMessage("No response received. Please try again.");
           }
 
-          if (conv) {
-            conv.messages.push({
-              id: this.createMessageId(),
-              role: "assistant",
-              type: "message",
-              items,
-              timestamp: Date.now(),
-            });
-            await this.plugin.saveConversation(conv);
-          }
+           if (conv) {
+             if (items.length === 0) {
+               conv.messages.push({
+                 id: this.createMessageId(),
+                 role: "assistant",
+                 type: "message",
+                 error: "No response received. Please try again.",
+                 timestamp: Date.now(),
+               });
+               await this.plugin.saveConversation(conv);
+               continue;
+             }
+
+             conv.messages.push({
+               id: this.createMessageId(),
+               role: "assistant",
+               type: "message",
+               items,
+               timestamp: Date.now(),
+             });
+             await this.plugin.saveConversation(conv);
+           }
+
 
           this.setGeneratingState(false);
           continue;
@@ -762,18 +792,19 @@ export class OpencodianView extends ItemView {
       const errorMsg = error instanceof Error ? error.message : "Unknown error";
       console.error("[OpencodianView] Error during message generation:", errorMsg);
 
-      this.addErrorMessage(errorMsg);
+       this.addErrorMessage(errorMsg);
 
-      if (conv) {
-        conv.messages.push({
-          id: this.createMessageId(),
-          role: "assistant",
-          type: "message",
-          items,
-          timestamp: Date.now(),
-        });
-        await this.plugin.saveConversation(conv);
-      }
+       if (conv) {
+         conv.messages.push({
+           id: this.createMessageId(),
+           role: "assistant",
+           type: "message",
+           error: errorMsg,
+           timestamp: Date.now(),
+         });
+         await this.plugin.saveConversation(conv);
+       }
+
 
       this.scrollToBottom();
       this.setGeneratingState(false);
@@ -1003,36 +1034,64 @@ export class OpencodianView extends ItemView {
            continue;
          }
 
-         if (chunk.type === "error") {
-           clearWorking();
-           this.addErrorMessage(chunk.content);
-           this.scrollToBottom();
-           continue;
-         }
+          if (chunk.type === "error") {
+            clearWorking();
+            this.addErrorMessage(chunk.content);
+
+            conv.messages.push({
+              id: this.createMessageId(),
+              role: "assistant",
+              type: "message",
+              error: chunk.content,
+              timestamp: Date.now(),
+            });
+
+            await this.plugin.saveConversation(conv);
+
+            this.scrollToBottom();
+            this.setGeneratingState(false);
+            continue;
+          }
+
 
           if (chunk.type === "done") {
             clearWorking();
 
             await renderActiveMarkdown();
 
-           if (items.length === 0) {
-             this.addErrorMessage("No response received. Please try again.");
-           }
+            if (items.length === 0) {
+              const msg = "No response received. Please try again.";
+              this.addErrorMessage(msg);
 
-           conv.messages.push({
-             id: this.createMessageId(),
-             role: "assistant",
-             type: "message",
-             items,
-             timestamp: Date.now(),
-           });
+              conv.messages.push({
+                id: this.createMessageId(),
+                role: "assistant",
+                type: "message",
+                error: msg,
+                timestamp: Date.now(),
+              });
 
-           await this.plugin.saveConversation(conv);
+              await this.plugin.saveConversation(conv);
 
-           this.scrollToBottom();
-           this.setGeneratingState(false);
-           continue;
-         }
+              this.scrollToBottom();
+              this.setGeneratingState(false);
+              continue;
+            }
+
+            conv.messages.push({
+              id: this.createMessageId(),
+              role: "assistant",
+              type: "message",
+              items,
+              timestamp: Date.now(),
+            });
+
+            await this.plugin.saveConversation(conv);
+
+            this.scrollToBottom();
+            this.setGeneratingState(false);
+            continue;
+          }
        }
      } catch (error) {
        clearWorking();
@@ -1044,7 +1103,7 @@ export class OpencodianView extends ItemView {
          id: this.createMessageId(),
          role: "assistant",
          type: "message",
-         items,
+         error: errorMsg,
          timestamp: Date.now(),
        });
 
@@ -1123,6 +1182,7 @@ export class OpencodianView extends ItemView {
 
     this.inputEl.style.height = `${newHeight}px`;
   }
+
 
   // ========== UI HELPERS ==========
 

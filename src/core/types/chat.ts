@@ -18,6 +18,11 @@ export interface ChatMessage {
    * Assistant messages should not set this.
    */
   content?: string;
+  /**
+   * Error text for assistant messages.
+   * Stored so reload can show same error.
+   */
+  error?: string;
   timestamp: number;
   images?: ImageAttachment[];
   /**
@@ -26,6 +31,7 @@ export interface ChatMessage {
    */
   mentions?: MentionInfo[];
 }
+
 
 export type ChatItem =
   | {
