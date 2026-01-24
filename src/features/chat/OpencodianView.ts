@@ -8,14 +8,16 @@ import {
   setIcon,
   MarkdownRenderer,
   TFolder,
+  Notice,
 } from "obsidian";
 import type OpencodianPlugin from "../../main";
 import { VIEW_TYPE_OPENCODIAN, processProviders } from "../../core/types";
 import type {
-  ToolCallInfo,
   MentionInfo,
   ProviderWithModels,
   ModelOption,
+  ChatItem,
+  Conversation,
 } from "../../core/types";
 import type { MentionContext } from "../../core/agent/OpenCodeService";
 import { FileMention } from "./FileMention";
@@ -31,34 +33,28 @@ interface ToolBlock {
 export class OpencodianView extends ItemView {
   plugin: OpencodianPlugin;
   private mainContainerEl: HTMLElement;
-  private messagesEl: HTMLElement;
-  private historyDropdownEl: HTMLElement;
   private historyBtnEl: HTMLElement;
-  private inputEl: HTMLTextAreaElement;
+  private historyDropdownEl: HTMLElement;
   private isHistoryOpen: boolean = false;
-
-  /** Model selector elements */
-  private modelSelectorEl: HTMLElement;
-  private modelDropdownEl: HTMLElement;
-  private modelButtonEl: HTMLElement;
-  private isModelDropdownOpen: boolean = false;
-
-  /** Two-level dropdown state */
-  private providers: ProviderWithModels[] = [];
-  private selectedProvider: ProviderWithModels | null = null;
-  private isLoadingProviders: boolean = false;
-  private providersLoaded: boolean = false;
-
-  /** Map tool invocation IDs to their UI elements */
+  private messagesEl: HTMLElement;
+  private inputEl: HTMLTextAreaElement;
+  private sendButtonEl: HTMLElement;
+  private isGenerating: boolean = false;
   private activeToolBlocks: Map<string, ToolBlock> = new Map();
   private currentThinkingBlock: ToolBlock | null = null;
-
-  /** Send button state */
-  private sendButtonEl: HTMLButtonElement;
-  private isGenerating: boolean = false;
-
-  /** File mention system */
+  private welcomeMessageShown: boolean = false;
   private fileMention: FileMention | null = null;
+  private currentConversation: Conversation | null = null;
+
+  // Model selector state
+  private modelSelectorEl: HTMLElement;
+  private modelButtonEl: HTMLElement;
+  private modelDropdownEl: HTMLElement;
+  private isModelDropdownOpen: boolean = false;
+  private providers: ProviderWithModels[] = [];
+  private providersLoaded: boolean = false;
+  private isLoadingProviders: boolean = false;
+  private selectedProvider: ProviderWithModels | null = null;
 
   /** Inline edit state */
   private editingMessageId: string | null = null;
@@ -260,8 +256,8 @@ export class OpencodianView extends ItemView {
 
     listContainer.empty();
 
-    const conversations = this.plugin.getConversations();
-    const activeId = this.plugin.getActiveConversation()?.id;
+     const conversations = this.plugin.getConversations();
+    const activeId = this.plugin.settings.activeConversationId;
 
     for (const conv of conversations) {
       const itemEl = listContainer.createDiv({
@@ -271,35 +267,11 @@ export class OpencodianView extends ItemView {
       // Content
       const contentEl = itemEl.createDiv({ cls: "conversation-content" });
 
-      // Title Logic:
-      // Auto-migrate titles that look like default timestamps ONLY if they haven't been customized.
-      const firstMessage =
-        conv.messages.find((m) => m.role === "user")?.content || "";
-
-      // Default Obsidian/Plugin title format is usually date-based: "Jan 14, 11:34"
-      // Heuristic: contains numbers, a colon, and is relatively short.
-      const isDefaultDateTitle =
-        conv.title.length < 25 &&
-        /[0-9]/.test(conv.title) &&
-        (conv.title.includes(":") ||
-          conv.title.includes("月") ||
-          (conv.title.includes(",") && /[0-9]{4}/.test(conv.title)));
-
-      if (firstMessage && isDefaultDateTitle) {
-        const newTitle =
-          firstMessage.length > 50
-            ? firstMessage.substring(0, 50) + "..."
-            : firstMessage;
-        if (conv.title !== newTitle) {
-          conv.title = newTitle;
-          this.plugin.saveConversation(conv);
-        }
-      }
-
       contentEl.createDiv({
         text: conv.title || "New Chat",
         cls: "conversation-title",
       });
+
 
       // Secondary info (Date)
       const dateStr = this.formatDate(conv.updatedAt);
@@ -418,43 +390,57 @@ export class OpencodianView extends ItemView {
     await this.loadConversation();
   }
 
-  private async loadConversation(
-    scrollToBottom: boolean = true,
-  ): Promise<void> {
-    const conv = this.plugin.getActiveConversation();
-    this.messagesEl.empty();
+   private async loadConversation(
+     scrollToBottom: boolean = true,
+   ): Promise<void> {
+     const meta = this.plugin.getConversations().find(
+       (c) => c.id === this.plugin.settings.activeConversationId,
+     );
+ 
+     const convId = meta?.id ?? this.plugin.settings.activeConversationId;
+     const conv = convId ? await this.plugin.loadConversation(convId) : null;
+     this.currentConversation = conv;
+ 
+     this.messagesEl.empty();
+ 
+     if (!conv || conv.messages.length === 0) {
+       this.showWelcomeMessage();
+       return;
+     }
 
-    if (!conv || conv.messages.length === 0) {
-      this.showWelcomeMessage();
-      return;
-    }
+
 
     for (let idx = 0; idx < conv.messages.length; idx++) {
       const msg = conv.messages[idx];
 
-      // Backward compatibility: old data stored errors as standalone messages.
-      if (msg.type === "error") {
-        this.addErrorMessage(msg.content);
+      // Old conversations are intentionally not supported.
+      if (msg.role === "assistant" && (!msg.items || msg.items.length === 0)) {
+        this.addErrorMessage(
+          "This conversation was created by an older Opencodian version and cannot be displayed.",
+        );
         continue;
       }
 
-      const msgEl = this.addMessage(
-        msg.id,
-        msg.role,
-        msg.content,
-        msg.toolCalls,
-        msg.mentions,
-      );
+      if (msg.role === "user") {
+        this.addMessage(
+          msg.id,
+          "user",
+          msg.content ?? "",
+          undefined,
+          msg.mentions,
+        );
+        continue;
+      }
 
-      if (msg.errors && msg.errors.length > 0) {
-        const contentEl = msgEl.querySelector(
-          ".message-content",
-        ) as HTMLElement | null;
-        if (contentEl) {
-          for (const e of msg.errors) {
-            this.appendErrorBlock(contentEl, e);
-          }
-        }
+      const msgEl = this.addMessage(msg.id, "assistant", "");
+      const bubbleEl = msgEl.querySelector(
+        ".message-bubble",
+      ) as HTMLElement | null;
+      if (!bubbleEl) continue;
+
+      const itemsEl = bubbleEl.createDiv({ cls: "opencodian-items" });
+      for (const item of msg.items ?? []) {
+        this.appendTimelineItem(itemsEl, item);
       }
     }
 
@@ -550,7 +536,13 @@ export class OpencodianView extends ItemView {
     this.clearWelcomeMessage();
 
     // Save to conversation
-    const conv = this.plugin.getActiveConversation();
+    const convMeta = this.plugin.getConversations().find(
+      (c) => c.id === this.plugin.settings.activeConversationId,
+    );
+
+    const convId = convMeta?.id ?? this.plugin.settings.activeConversationId;
+    const conv = convId ? await this.plugin.loadConversation(convId) : null;
+    this.currentConversation = conv;
     const messageId = this.createMessageId();
 
     // Add user message to UI (with mentions badge)
@@ -582,22 +574,28 @@ export class OpencodianView extends ItemView {
       await this.plugin.saveConversation(conv);
     }
 
-    // Create assistant message placeholder
+    // Create assistant message placeholder (timeline-based)
     const assistantMsgEl = this.addMessage(null, "assistant", "");
     const bubbleEl = assistantMsgEl.querySelector(
       ".message-bubble",
     ) as HTMLElement;
-    const contentEl = assistantMsgEl.querySelector(
+
+    // Replace the legacy single content container with a timeline container.
+    const legacyContentEl = assistantMsgEl.querySelector(
       ".message-content",
-    ) as HTMLElement;
+    ) as HTMLElement | null;
+    if (legacyContentEl) {
+      legacyContentEl.remove();
+    }
+
+    const itemsEl = bubbleEl.createDiv({ cls: "opencodian-items" });
 
     // Placeholder shown until the first real assistant content/tool event arrives.
     const workingEl = document.createElement("div");
     workingEl.className = "opencodian-working";
     workingEl.textContent = "Working on it...";
-    contentEl.appendChild(workingEl);
+    itemsEl.appendChild(workingEl);
 
-    // Immediately scroll to show the working placeholder
     this.scrollToBottom();
 
     const clearWorking = () => {
@@ -607,52 +605,28 @@ export class OpencodianView extends ItemView {
     // Reset streaming state
     this.activeToolBlocks.clear();
 
-    // Track response state at outer scope so catch block can access
-    let fullResponse = "";
-    const toolCallsById = new Map<string, ToolCallInfo>();
-    const errorAcc: string[] = [];
-    let mdRenderTimer: number | null = null;
+     // Track timeline state at outer scope so catch block can access
+     const items: ChatItem[] = [];
+     const toolItemsById = new Map<string, ChatItem>();
 
-    try {
-      // Markdown streaming: render incrementally with a debounce to preserve the
-      // "streaming" feel without re-rendering on every token.
-      let mdRenderInFlight = false;
-      let mdRenderQueued = false;
-      let lastRendered = "";
-      let hasRenderedMarkdown = false;
+     // The currently active (last) text item & its DOM.
+     let activeTextId: string | null = null;
+     let activeTextEl: HTMLElement | null = null;
 
-      const scheduleMarkdownRender = () => {
-        mdRenderQueued = true;
-        if (mdRenderTimer !== null) {
-          window.clearTimeout(mdRenderTimer);
-        }
-        mdRenderTimer = window.setTimeout(() => {
-          mdRenderTimer = null;
-          void (async () => {
-            if (mdRenderInFlight) return;
-            if (!mdRenderQueued) return;
+      try {
+        const isTextItem = (v: ChatItem): v is Extract<ChatItem, { type: "text" }> =>
+          v.type === "text";
 
-            mdRenderQueued = false;
-            const toRender = fullResponse;
-            if (toRender === lastRendered) return;
+        const renderActiveMarkdown = async (): Promise<void> => {
+          if (!activeTextId) return;
+          if (!activeTextEl) return;
 
-            mdRenderInFlight = true;
-            try {
-              await this.renderMarkdown(toRender, contentEl);
-              hasRenderedMarkdown = true;
-              lastRendered = toRender;
-            } finally {
-              mdRenderInFlight = false;
-            }
+          const last = items[items.length - 1];
+          if (!last || !isTextItem(last) || last.id !== activeTextId) return;
 
-            this.scrollToBottom();
+          await this.renderMarkdown(last.text, activeTextEl);
+        };
 
-            if (mdRenderQueued) {
-              scheduleMarkdownRender();
-            }
-          })();
-        }, 80);
-      };
 
       // Initial loading indicator?
       // contentEl.innerHTML = '<span class="loading-dots">...</span>';
@@ -671,161 +645,137 @@ export class OpencodianView extends ItemView {
         if (chunk.type === "text") {
           clearWorking();
 
-          fullResponse += chunk.content;
-          if (!hasRenderedMarkdown) {
-            // Show plain text immediately until the first markdown render happens.
-            contentEl.textContent = fullResponse;
+          if (activeTextId && activeTextEl) {
+            const last = items[items.length - 1];
+            if (last && isTextItem(last) && last.id === activeTextId) {
+              last.text += chunk.content;
+              activeTextEl.textContent = last.text;
+            }
+          } else {
+            const id = this.createMessageId();
+            const item: Extract<ChatItem, { type: "text" }> = {
+              type: "text",
+              id,
+              timestamp: Date.now(),
+              text: chunk.content,
+            };
+            items.push(item);
+
+            const el = itemsEl.createDiv({ cls: "message-content" });
+            el.textContent = chunk.content;
+            activeTextId = id;
+            activeTextEl = el;
           }
-          scheduleMarkdownRender();
+
           this.scrollToBottom();
-        } else if (chunk.type === "tool_use") {
+          continue;
+        }
+
+        if (chunk.type === "tool_use") {
           clearWorking();
 
-          this.renderToolUseBlock(
-            bubbleEl,
-            contentEl,
-            chunk.toolName,
-            chunk.input,
-            chunk.toolUseId,
-          );
+          // Close out the current text item so later text starts a new block.
+          activeTextId = null;
+          activeTextEl = null;
 
-          // Persist tool call info (but NOT tool results / thinking).
-          toolCallsById.set(chunk.toolUseId, {
-            toolUseId: chunk.toolUseId,
-            toolName: chunk.toolName,
-            summary: this.getToolInputSummary(chunk.toolName, chunk.input),
-            input: this.sanitizeToolInput(chunk.input),
-          });
+          const existing = toolItemsById.get(chunk.toolUseId);
+          if (!existing) {
+            const item: Extract<ChatItem, { type: "tool" }> = {
+              type: "tool",
+              id: chunk.toolUseId,
+              timestamp: Date.now(),
+              toolUseId: chunk.toolUseId,
+              toolName: chunk.toolName,
+              input: this.sanitizeToolInput(chunk.input),
+              status: "running",
+            };
+            items.push(item);
+            toolItemsById.set(chunk.toolUseId, item);
+            this.renderToolUseBlock(itemsEl, chunk.toolName, item.input, chunk.toolUseId);
+          } else if (existing.type === "tool") {
+            existing.toolName = chunk.toolName;
+            existing.input = this.sanitizeToolInput(chunk.input);
+            existing.status = "running";
+            this.renderToolUseBlock(itemsEl, chunk.toolName, existing.input, chunk.toolUseId);
+          }
+
           this.scrollToBottom();
-        } else if (chunk.type === "tool_result") {
+          continue;
+        }
+
+        if (chunk.type === "tool_result") {
           clearWorking();
-          scheduleMarkdownRender();
+
+          const existing = toolItemsById.get(chunk.toolUseId);
+          if (existing && existing.type === "tool") {
+            existing.result = chunk.result;
+            existing.status = chunk.result.trim().startsWith("Error:")
+              ? "error"
+              : "done";
+          }
+
           this.renderToolResultBlock(chunk.toolUseId, chunk.result);
           this.scrollToBottom();
-        } else if (chunk.type === "error") {
+          continue;
+        }
+
+        if (chunk.type === "thinking") {
+          // Intentionally ignored.
+          continue;
+        }
+
+        if (chunk.type === "error") {
           clearWorking();
 
-          // Append error to content (works for both partial and empty responses)
-          this.appendError(contentEl, chunk.content);
-
-          // Track errors on the assistant message (persisted at the end).
-          if (!errorAcc.includes(chunk.content)) {
-            errorAcc.push(chunk.content);
-          }
-
+          this.addErrorMessage(chunk.content);
           this.scrollToBottom();
-        } else if (chunk.type === "done") {
+          continue;
+        }
+
+        if (chunk.type === "done") {
           clearWorking();
-          if (mdRenderTimer !== null) {
-            window.clearTimeout(mdRenderTimer);
-            mdRenderTimer = null;
+
+          await renderActiveMarkdown();
+
+          if (items.length === 0) {
+            this.addErrorMessage("No response received. Please try again.");
           }
 
-          // If we only rendered plain text during streaming, the last markdown render
-          // might have been skipped. Render once at the end.
-          if (fullResponse) {
-            await this.renderMarkdown(fullResponse, contentEl);
-            hasRenderedMarkdown = true;
-          }
-
-          // If we received no response at all, show a user-visible error and track it.
-          if (!fullResponse.trim()) {
-            const message = "No response received. Please try again.";
-            this.appendError(contentEl, message);
-
-            if (!errorAcc.includes(message)) {
-              errorAcc.push(message);
-            }
-          }
-
-          // Persist the assistant message even if empty (so users can see the error block in history)
           if (conv) {
             conv.messages.push({
               id: this.createMessageId(),
               role: "assistant",
               type: "message",
-              content: fullResponse,
+              items,
               timestamp: Date.now(),
-              toolCalls: Array.from(toolCallsById.values()),
-              errors: errorAcc.length > 0 ? errorAcc : undefined,
             });
             await this.plugin.saveConversation(conv);
           }
 
-          // Reset generating state
           this.setGeneratingState(false);
+          continue;
         }
       }
     } catch (error) {
       clearWorking();
 
-      // Get the error message
       const errorMsg = error instanceof Error ? error.message : "Unknown error";
+      console.error("[OpencodianView] Error during message generation:", errorMsg);
 
-      console.error("[OpencodianView] Error during message generation:", {
-        error: errorMsg,
-        hasPartialResponse: fullResponse.trim().length > 0,
-      });
+      this.addErrorMessage(errorMsg);
 
-      // Check if we have accumulated any response content
-      const hasPartialResponse = fullResponse.trim().length > 0;
-
-      if (hasPartialResponse) {
-        // Preserve the partial response - render what we have
-        if (mdRenderTimer !== null) {
-          window.clearTimeout(mdRenderTimer);
-          mdRenderTimer = null;
-        }
-        await this.renderMarkdown(fullResponse, contentEl);
-      } else {
-        // No content yet - clear the placeholder
-        contentEl.empty();
-      }
-
-      // Always append error using unified method
-      this.appendError(contentEl, errorMsg);
-
-      // Save the partial response to conversation (if any content exists)
-      if (conv && hasPartialResponse) {
+      if (conv) {
         conv.messages.push({
           id: this.createMessageId(),
           role: "assistant",
           type: "message",
-          content: fullResponse,
+          items,
           timestamp: Date.now(),
-          toolCalls: Array.from(toolCallsById.values()),
         });
         await this.plugin.saveConversation(conv);
       }
 
-      // Persist the error on the assistant message (same turn).
-      if (!errorAcc.includes(errorMsg)) {
-        errorAcc.push(errorMsg);
-      }
-
-      if (conv) {
-        const msg = conv.messages[conv.messages.length - 1];
-        if (msg && msg.role === "assistant" && msg.type === "message") {
-          const merged = this.mergeErrors(msg.errors, errorAcc);
-          msg.errors = merged.length > 0 ? merged : undefined;
-          await this.plugin.saveConversation(conv);
-        } else {
-          conv.messages.push({
-            id: this.createMessageId(),
-            role: "assistant",
-            type: "message",
-            content: fullResponse,
-            timestamp: Date.now(),
-            toolCalls: Array.from(toolCallsById.values()),
-            errors: errorAcc.length > 0 ? errorAcc : undefined,
-          });
-          await this.plugin.saveConversation(conv);
-        }
-      }
-
       this.scrollToBottom();
-
-      // CRITICAL: Always reset generating state on error
       this.setGeneratingState(false);
     } finally {
       // Ensure generating state is always reset, even if error handling fails
@@ -854,7 +804,7 @@ export class OpencodianView extends ItemView {
   }
 
   private getMessageIndex(messageId: string): number {
-    const conv = this.plugin.getActiveConversation();
+    const conv = this.currentConversation;
     if (!conv) return -1;
     return conv.messages.findIndex((m) => m.id === messageId);
   }
@@ -864,7 +814,7 @@ export class OpencodianView extends ItemView {
   }
 
   private async regenerateFrom(messageId: string): Promise<void> {
-    const conv = this.plugin.getActiveConversation();
+    const conv = this.currentConversation;
     if (!conv) return;
 
     const idx = this.getMessageIndex(messageId);
@@ -873,8 +823,9 @@ export class OpencodianView extends ItemView {
     const msg = conv.messages[idx];
     if (!msg || msg.role !== "user") return;
 
-    await this.pruneAndSend(messageId, msg.content);
+    await this.pruneAndSend(messageId, msg.content ?? "");
   }
+
 
   private async pruneAndSend(messageId: string, text: string): Promise<void> {
     if (this.isGenerating) {
@@ -882,8 +833,9 @@ export class OpencodianView extends ItemView {
       this.setGeneratingState(false);
     }
 
-    const conv = this.plugin.getActiveConversation();
+    const conv = this.currentConversation;
     if (!conv) return;
+
 
     const resolvedIdx = this.getMessageIndex(messageId);
     if (resolvedIdx < 0 || resolvedIdx >= conv.messages.length) return;
@@ -906,10 +858,13 @@ export class OpencodianView extends ItemView {
     conv.updatedAt = Date.now();
     await this.plugin.saveConversation(conv);
 
+    this.currentConversation = conv;
+
     // Hard refresh: ensure old branch disappears immediately.
     this.activeToolBlocks.clear();
     this.currentThinkingBlock = null;
     await this.loadConversation();
+
 
     this.setGeneratingState(true);
 
@@ -917,201 +872,192 @@ export class OpencodianView extends ItemView {
     const bubbleEl = assistantMsgEl.querySelector(
       ".message-bubble",
     ) as HTMLElement;
-    const contentEl = assistantMsgEl.querySelector(
+
+    const legacyContentEl = assistantMsgEl.querySelector(
       ".message-content",
-    ) as HTMLElement;
+    ) as HTMLElement | null;
+    if (legacyContentEl) {
+      legacyContentEl.remove();
+    }
+
+    const itemsEl = bubbleEl.createDiv({ cls: "opencodian-items" });
 
     const workingEl = document.createElement("div");
     workingEl.className = "opencodian-working";
     workingEl.textContent = "Working on it...";
-    contentEl.appendChild(workingEl);
+    itemsEl.appendChild(workingEl);
     this.scrollToBottom();
 
     const clearWorking = () => {
       if (workingEl.parentElement) workingEl.remove();
     };
 
-    let fullResponse = "";
-    const toolCallsById = new Map<string, ToolCallInfo>();
-    const errorAcc: string[] = [];
-    let mdRenderTimer: number | null = null;
+     const items: ChatItem[] = [];
 
-    try {
-      let mdRenderInFlight = false;
-      let mdRenderQueued = false;
-      let lastRendered = "";
-      let hasRenderedMarkdown = false;
+     let activeTextId: string | null = null;
+     let activeTextEl: HTMLElement | null = null;
 
-      const scheduleMarkdownRender = () => {
-        mdRenderQueued = true;
-        if (mdRenderTimer !== null) {
-          window.clearTimeout(mdRenderTimer);
-        }
-        mdRenderTimer = window.setTimeout(() => {
-          mdRenderTimer = null;
-          void (async () => {
-            if (mdRenderInFlight) return;
-            if (!mdRenderQueued) return;
+      try {
+        const isTextItem = (v: ChatItem): v is Extract<ChatItem, { type: "text" }> =>
+          v.type === "text";
 
-            mdRenderQueued = false;
-            const toRender = fullResponse;
-            if (toRender === lastRendered) return;
+        const toolItemsById = new Map<string, Extract<ChatItem, { type: "tool" }>>();
 
-            mdRenderInFlight = true;
-            try {
-              await this.renderMarkdown(toRender, contentEl);
-              hasRenderedMarkdown = true;
-              lastRendered = toRender;
-            } finally {
-              mdRenderInFlight = false;
+        const renderActiveMarkdown = async (): Promise<void> => {
+          if (!activeTextId) return;
+          if (!activeTextEl) return;
+
+          const last = items[items.length - 1];
+          if (!last || !isTextItem(last) || last.id !== activeTextId) return;
+
+          await this.renderMarkdown(last.text, activeTextEl);
+        };
+
+       for await (const chunk of this.plugin.agentService.query(
+         text,
+         undefined,
+         conv.messages,
+         {
+           model: this.plugin.settings.model,
+         },
+       )) {
+          if (chunk.type === "text") {
+            clearWorking();
+
+            if (activeTextId && activeTextEl) {
+              const last = items[items.length - 1];
+              if (last && isTextItem(last) && last.id === activeTextId) {
+                last.text += chunk.content;
+                activeTextEl.textContent = last.text;
+              }
+            } else {
+              const id = this.createMessageId();
+              const item: Extract<ChatItem, { type: "text" }> = {
+                type: "text",
+                id,
+                timestamp: Date.now(),
+                text: chunk.content,
+              };
+              items.push(item);
+
+              const el = itemsEl.createDiv({ cls: "message-content" });
+              el.textContent = chunk.content;
+              activeTextId = id;
+              activeTextEl = el;
             }
 
             this.scrollToBottom();
-
-            if (mdRenderQueued) {
-              scheduleMarkdownRender();
-            }
-          })();
-        }, 80);
-      };
-
-      for await (const chunk of this.plugin.agentService.query(
-        text,
-        undefined,
-        conv.messages,
-        {
-          model: this.plugin.settings.model,
-        },
-      )) {
-        if (chunk.type === "text") {
-          clearWorking();
-
-          fullResponse += chunk.content;
-          if (!hasRenderedMarkdown) {
-            contentEl.textContent = fullResponse;
-          }
-          scheduleMarkdownRender();
-          this.scrollToBottom();
-          continue;
-        }
-
-        if (chunk.type === "tool_use") {
-          clearWorking();
-
-          this.renderToolUseBlock(
-            bubbleEl,
-            contentEl,
-            chunk.toolName,
-            chunk.input,
-            chunk.toolUseId,
-          );
-
-          toolCallsById.set(chunk.toolUseId, {
-            toolUseId: chunk.toolUseId,
-            toolName: chunk.toolName,
-            summary: this.getToolInputSummary(chunk.toolName, chunk.input),
-            input: this.sanitizeToolInput(chunk.input),
-          });
-          this.scrollToBottom();
-          continue;
-        }
-
-        if (chunk.type === "tool_result") {
-          clearWorking();
-          scheduleMarkdownRender();
-          this.renderToolResultBlock(chunk.toolUseId, chunk.result);
-          this.scrollToBottom();
-          continue;
-        }
-
-        if (chunk.type === "error") {
-          clearWorking();
-
-          this.appendError(contentEl, chunk.content);
-          if (!errorAcc.includes(chunk.content)) {
-            errorAcc.push(chunk.content);
+            continue;
           }
 
-          this.scrollToBottom();
-          continue;
-        }
+           if (chunk.type === "tool_use") {
+           clearWorking();
 
-        if (chunk.type === "done") {
-          clearWorking();
-          if (mdRenderTimer !== null) {
-            window.clearTimeout(mdRenderTimer);
-            mdRenderTimer = null;
-          }
+           // Close out the current text item so later text starts a new block.
+           activeTextId = null;
+           activeTextEl = null;
 
-          if (fullResponse) {
-            await this.renderMarkdown(fullResponse, contentEl);
-            hasRenderedMarkdown = true;
-          }
+            const existing = toolItemsById.get(chunk.toolUseId);
+           const input = this.sanitizeToolInput(chunk.input);
 
-          if (!fullResponse.trim()) {
-            const message = "No response received. Please try again.";
-            this.appendError(contentEl, message);
-            if (!errorAcc.includes(message)) {
-              errorAcc.push(message);
-            }
-          }
+           if (!existing) {
+             const item: Extract<ChatItem, { type: "tool" }> = {
+               type: "tool",
+               id: chunk.toolUseId,
+               timestamp: Date.now(),
+               toolUseId: chunk.toolUseId,
+               toolName: chunk.toolName,
+               input,
+               status: "running",
+             };
+             items.push(item);
+             toolItemsById.set(chunk.toolUseId, item);
+           } else {
+             existing.toolName = chunk.toolName;
+             existing.input = input;
+             existing.status = "running";
+           }
 
-          conv.messages.push({
-            id: this.createMessageId(),
-            role: "assistant",
-            type: "message",
-            content: fullResponse,
-            timestamp: Date.now(),
-            toolCalls: Array.from(toolCallsById.values()),
-            errors: errorAcc.length > 0 ? errorAcc : undefined,
-          });
-          await this.plugin.saveConversation(conv);
+           this.renderToolUseBlock(itemsEl, chunk.toolName, input, chunk.toolUseId);
+           this.scrollToBottom();
+           continue;
+         }
 
-          this.setGeneratingState(false);
-        }
-      }
-    } catch (error) {
-      clearWorking();
+         if (chunk.type === "tool_result") {
+           clearWorking();
 
-      const errorMsg = error instanceof Error ? error.message : "Unknown error";
+           const existing = toolItemsById.get(chunk.toolUseId);
+           if (existing) {
+             existing.result = chunk.result;
+             existing.status = chunk.result.trim().startsWith("Error:")
+               ? "error"
+               : "done";
+           }
 
-      const hasPartialResponse = fullResponse.trim().length > 0;
+           this.renderToolResultBlock(chunk.toolUseId, chunk.result);
+           this.scrollToBottom();
+           continue;
+         }
 
-      if (hasPartialResponse) {
-        if (mdRenderTimer !== null) {
-          window.clearTimeout(mdRenderTimer);
-          mdRenderTimer = null;
-        }
-        await this.renderMarkdown(fullResponse, contentEl);
-      } else {
-        contentEl.empty();
-      }
+         if (chunk.type === "thinking") {
+           continue;
+         }
 
-      this.appendError(contentEl, errorMsg);
+         if (chunk.type === "error") {
+           clearWorking();
+           this.addErrorMessage(chunk.content);
+           this.scrollToBottom();
+           continue;
+         }
 
-      if (!errorAcc.includes(errorMsg)) {
-        errorAcc.push(errorMsg);
-      }
+          if (chunk.type === "done") {
+            clearWorking();
 
-      conv.messages.push({
-        id: this.createMessageId(),
-        role: "assistant",
-        type: "message",
-        content: fullResponse,
-        timestamp: Date.now(),
-        toolCalls: Array.from(toolCallsById.values()),
-        errors: errorAcc.length > 0 ? errorAcc : undefined,
-      });
+            await renderActiveMarkdown();
 
-      await this.plugin.saveConversation(conv);
+           if (items.length === 0) {
+             this.addErrorMessage("No response received. Please try again.");
+           }
 
-      this.scrollToBottom();
-      this.setGeneratingState(false);
-    } finally {
-      if (this.isGenerating) {
-        this.setGeneratingState(false);
-      }
-    }
+           conv.messages.push({
+             id: this.createMessageId(),
+             role: "assistant",
+             type: "message",
+             items,
+             timestamp: Date.now(),
+           });
+
+           await this.plugin.saveConversation(conv);
+
+           this.scrollToBottom();
+           this.setGeneratingState(false);
+           continue;
+         }
+       }
+     } catch (error) {
+       clearWorking();
+
+       const errorMsg = error instanceof Error ? error.message : "Unknown error";
+       this.addErrorMessage(errorMsg);
+
+       conv.messages.push({
+         id: this.createMessageId(),
+         role: "assistant",
+         type: "message",
+         items,
+         timestamp: Date.now(),
+       });
+
+       await this.plugin.saveConversation(conv);
+
+       this.scrollToBottom();
+       this.setGeneratingState(false);
+     } finally {
+       if (this.isGenerating) {
+         this.setGeneratingState(false);
+       }
+     }
+
   }
 
   /**
@@ -1200,7 +1146,7 @@ export class OpencodianView extends ItemView {
     messageId: string | null,
     role: "user" | "assistant",
     content: string,
-    toolCalls?: ToolCallInfo[],
+    _toolCalls?: unknown,
     mentions?: MentionInfo[],
   ): HTMLElement {
     const msgEl = this.messagesEl.createDiv({
@@ -1244,16 +1190,13 @@ export class OpencodianView extends ItemView {
     }
 
     const contentEl = hotzoneEl.createDiv({ cls: "message-content" });
+    // Assistant messages use a timeline container instead of this contentEl; callers may remove it.
 
     if (role === "user" && messageId) {
       this.addUserMessageActions(hotzoneEl, messageId, content);
     }
 
-    if (role === "assistant" && toolCalls && toolCalls.length > 0) {
-      for (const call of toolCalls) {
-        this.renderHistoricalToolCallBlock(bubbleEl, contentEl, call);
-      }
-    }
+    // Historical tool rendering removed: assistant messages are timeline-based.
 
     if (content) {
       if (role === "assistant") {
@@ -1269,69 +1212,19 @@ export class OpencodianView extends ItemView {
     return msgEl;
   }
 
-  private renderHistoricalToolCallBlock(
-    bubbleEl: HTMLElement,
-    beforeEl: HTMLElement,
-    call: ToolCallInfo,
-  ): void {
-    const blockEl = document.createElement("div");
-    blockEl.className = "tool-block collapsed";
-    blockEl.setAttribute("data-tool-id", call.toolUseId);
-
-    const headerEl = document.createElement("div");
-    headerEl.className = "tool-header";
-
-    const iconEl = document.createElement("span");
-    iconEl.className = "tool-icon";
-    setIcon(iconEl, this.getToolIcon(call.toolName));
-
-    const labelEl = document.createElement("span");
-    labelEl.className = "tool-label";
-    {
-      const name = this.formatToolName(call.toolName);
-      labelEl.textContent = call.summary ? `${name}: ${call.summary}` : name;
+  private appendTimelineItem(parentEl: HTMLElement, item: ChatItem): void {
+    if (item.type === "text") {
+      const el = parentEl.createDiv({ cls: "message-content" });
+      void this.renderMarkdown(item.text, el);
+      return;
     }
 
-    const statusEl = document.createElement("span");
-    statusEl.className = "tool-status done";
-    statusEl.textContent = "Done";
-
-    const chevronEl = document.createElement("span");
-    chevronEl.className = "tool-chevron";
-    setIcon(chevronEl, "chevron-right");
-
-    headerEl.appendChild(iconEl);
-    headerEl.appendChild(labelEl);
-    headerEl.appendChild(statusEl);
-    headerEl.appendChild(chevronEl);
-
-    const contentEl = document.createElement("div");
-    contentEl.className = "tool-content";
-
-    const inputSection = document.createElement("div");
-    inputSection.className = "tool-section";
-
-    const inputLabel = document.createElement("div");
-    inputLabel.className = "tool-section-label";
-    inputLabel.textContent = "Input";
-
-    const inputCode = document.createElement("pre");
-    inputCode.className = "tool-code";
-    inputCode.textContent = JSON.stringify(call.input ?? {}, null, 2);
-
-    inputSection.appendChild(inputLabel);
-    inputSection.appendChild(inputCode);
-    contentEl.appendChild(inputSection);
-
-    blockEl.appendChild(headerEl);
-    blockEl.appendChild(contentEl);
-
-    headerEl.addEventListener("click", () => {
-      const isCollapsed = blockEl.classList.toggle("collapsed");
-      setIcon(chevronEl, isCollapsed ? "chevron-right" : "chevron-down");
-    });
-
-    bubbleEl.insertBefore(blockEl, beforeEl);
+    if (item.type === "tool") {
+      this.renderToolUseBlock(parentEl, item.toolName, item.input, item.toolUseId);
+      if (item.result != null) {
+        this.renderToolResultBlock(item.toolUseId, item.result);
+      }
+    }
   }
 
   private getToolInputSummary(
@@ -1435,6 +1328,18 @@ export class OpencodianView extends ItemView {
 
     const actionsEl = hotzoneEl.createDiv({
       cls: "opencodian-message-actions",
+    });
+
+    const copyBtn = actionsEl.createDiv({
+      cls: "opencodian-message-action-btn",
+      attr: { "aria-label": "Copy" },
+    });
+    setIcon(copyBtn, "copy");
+    copyBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void navigator.clipboard.writeText(content);
+      new Notice("Copied to clipboard");
     });
 
     const editBtn = actionsEl.createDiv({
@@ -1599,65 +1504,8 @@ export class OpencodianView extends ItemView {
   /**
    * Render tool invocation block
    */
-  private renderThinkingBlock(
-    bubbleEl: HTMLElement,
-    beforeEl: HTMLElement,
-    content: string,
-  ): void {
-    if (!this.currentThinkingBlock) {
-      // Create new thinking block
-      const blockEl = document.createElement("div");
-      blockEl.className = "thinking-block";
-
-      // Header with toggle
-      const headerEl = document.createElement("div");
-      headerEl.className = "thinking-header";
-
-      const iconEl = document.createElement("span");
-      iconEl.className = "thinking-icon";
-      setIcon(iconEl, "brain");
-
-      const labelEl = document.createElement("span");
-      labelEl.className = "thinking-label";
-      labelEl.textContent = "Thinking...";
-
-      const chevronEl = document.createElement("span");
-      chevronEl.className = "thinking-chevron";
-      setIcon(chevronEl, "chevron-down");
-
-      headerEl.appendChild(iconEl);
-      headerEl.appendChild(labelEl);
-      headerEl.appendChild(chevronEl);
-
-      // Content area
-      const contentEl = document.createElement("div");
-      contentEl.className = "thinking-content";
-
-      blockEl.appendChild(headerEl);
-      blockEl.appendChild(contentEl);
-
-      // Insert before the main content
-      bubbleEl.insertBefore(blockEl, beforeEl);
-
-      // Toggle handler
-      headerEl.addEventListener("click", () => {
-        const isCollapsed = blockEl.classList.toggle("collapsed");
-        setIcon(chevronEl, isCollapsed ? "chevron-right" : "chevron-down");
-        if (this.currentThinkingBlock) {
-          this.currentThinkingBlock.isCollapsed = isCollapsed;
-        }
-      });
-
-      this.currentThinkingBlock = {
-        el: blockEl,
-        headerEl,
-        contentEl,
-        isCollapsed: false,
-      };
-    }
-
-    // Update content
-    this.currentThinkingBlock.contentEl.textContent = content;
+  private renderThinkingBlock(_content: string): void {
+    // Intentionally ignored: thinking/reasoning is not displayed or persisted.
   }
 
   /**
@@ -1665,7 +1513,6 @@ export class OpencodianView extends ItemView {
    */
   private renderToolUseBlock(
     bubbleEl: HTMLElement,
-    beforeEl: HTMLElement,
     toolName: string,
     input: Record<string, unknown>,
     toolUseId: string,
@@ -1780,8 +1627,7 @@ export class OpencodianView extends ItemView {
     blockEl.appendChild(headerEl);
     blockEl.appendChild(contentEl);
 
-    // Insert before main content
-    bubbleEl.insertBefore(blockEl, beforeEl);
+    bubbleEl.appendChild(blockEl);
 
     // Toggle handler
     headerEl.addEventListener("click", () => {

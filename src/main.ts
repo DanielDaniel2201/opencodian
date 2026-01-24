@@ -7,8 +7,9 @@
 import { Plugin } from "obsidian";
 
 import { OpenCodeService } from "./core/agent";
-import type { Conversation, OpencodianSettings } from "./core/types";
+import type { Conversation, ConversationMeta, OpencodianSettings } from "./core/types";
 import { DEFAULT_SETTINGS, VIEW_TYPE_OPENCODIAN } from "./core/types";
+import { SessionStorage } from "./core/storage";
 import { OpencodianView } from "./features/chat/OpencodianView";
 import { OpencodianSettingTab } from "./features/settings/OpencodianSettings";
 
@@ -18,13 +19,12 @@ import { OpencodianSettingTab } from "./features/settings/OpencodianSettings";
 export default class OpencodianPlugin extends Plugin {
   settings: OpencodianSettings;
   agentService: OpenCodeService;
-  private conversations: Conversation[] = [];
+  sessionStorage: SessionStorage;
+  private conversations: ConversationMeta[] = [];
   private activeConversationId: string | null = null;
+  private activeConversation: Conversation | null = null;
 
   async onload() {
-    console.log('Opencodian plugin loaded - testing hot reload');
-    console.log('Opencodian plugin loaded - testing hot reload');
-    console.log('Opencodian plugin loaded - testing hot reload');
     await this.loadSettings();
 
     // Initialize OpenCode service
@@ -89,103 +89,147 @@ export default class OpencodianPlugin extends Plugin {
   async loadSettings() {
     const data = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
-    this.conversations = this.settings.conversations || [];
+
+    this.sessionStorage = new SessionStorage(this.app);
+
+    await this.migrateLegacyConversations(data);
+
+    this.conversations = await this.sessionStorage.listConversations();
     this.activeConversationId = this.settings.activeConversationId;
+
+    const activeStillExists = this.activeConversationId
+      ? this.conversations.some((c) => c.id === this.activeConversationId)
+      : false;
+
+    if (!activeStillExists) {
+      this.activeConversationId = this.conversations[0]?.id ?? null;
+      this.settings.activeConversationId = this.activeConversationId;
+      await this.saveData(this.settings);
+    }
   }
 
   /** Save settings to disk */
   async saveSettings() {
-    this.settings.conversations = this.conversations;
     this.settings.activeConversationId = this.activeConversationId;
     await this.saveData(this.settings);
   }
 
   /** Create a new conversation */
   async createConversation(): Promise<Conversation> {
+    const now = Date.now();
     const conversation: Conversation = {
-      id: `conv-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
-      title: new Date().toLocaleString(undefined, {
+      id: `conv-${now}-${Math.random().toString(36).substring(2, 11)}`,
+      title: new Date(now).toLocaleString(undefined, {
         month: "short",
         day: "numeric",
         hour: "2-digit",
         minute: "2-digit",
       }),
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
       sessionId: null,
       messages: [],
     };
 
-    this.conversations.unshift(conversation);
+    await this.sessionStorage.saveConversation(conversation);
+
+    this.conversations = await this.sessionStorage.listConversations();
     this.activeConversationId = conversation.id;
+    this.activeConversation = conversation;
     this.agentService.resetSession();
 
     await this.saveSettings();
     return conversation;
   }
 
-  /** Get the active conversation */
-  getActiveConversation(): Conversation | null {
-    return (
-      this.conversations.find((c) => c.id === this.activeConversationId) || null
-    );
+  async loadConversation(conversationId: string): Promise<Conversation | null> {
+    const conversation = await this.sessionStorage.loadConversation(conversationId);
+    if (!conversation) return null;
+
+    this.activeConversation = conversation;
+    return conversation;
   }
 
-  /** Get all conversations */
-  getConversations(): Conversation[] {
+  /** Get the active conversation */
+  getActiveConversation(): Conversation | null {
+    if (!this.activeConversationId) return null;
+    if (this.activeConversation?.id === this.activeConversationId) {
+      return this.activeConversation;
+    }
+    return null;
+  }
+
+  /** Get all conversation metadata */
+  getConversations(): ConversationMeta[] {
     return this.conversations;
   }
 
-  /** Save a conversation */
+  /** Save the active conversation */
   async saveConversation(conversation: Conversation): Promise<void> {
-    conversation.updatedAt = Date.now();
-    await this.saveSettings();
+    const now = Date.now();
+    conversation.updatedAt = now;
+    await this.sessionStorage.saveConversation(conversation);
+
+    if (this.activeConversation?.id === conversation.id) {
+      this.activeConversation = conversation;
+    }
+
+    this.conversations = await this.sessionStorage.listConversations();
   }
 
   /** Switch to a different conversation */
   async switchConversation(conversationId: string): Promise<void> {
-    const conversation = this.conversations.find(
-      (c) => c.id === conversationId
-    );
-    if (conversation) {
-      this.activeConversationId = conversationId;
-      this.agentService.resetSession();
-      await this.saveSettings();
-    }
+    const exists = this.conversations.some((c) => c.id === conversationId);
+    if (!exists) return;
+
+    this.activeConversationId = conversationId;
+    this.activeConversation = null;
+    this.agentService.resetSession();
+    await this.saveSettings();
   }
 
   /** Delete a conversation */
   async deleteConversation(conversationId: string): Promise<void> {
-    const index = this.conversations.findIndex((c) => c.id === conversationId);
-    if (index === -1) return;
+    await this.sessionStorage.deleteConversation(conversationId);
 
-    this.conversations.splice(index, 1);
+    this.conversations = await this.sessionStorage.listConversations();
 
-    // If we deleted the active conversation, switch to another or create new
     if (this.activeConversationId === conversationId) {
-      if (this.conversations.length > 0) {
-        await this.switchConversation(this.conversations[0].id);
-      } else {
+      this.activeConversationId = this.conversations[0]?.id ?? null;
+      this.activeConversation = null;
+
+      if (!this.activeConversationId) {
         await this.createConversation();
+        return;
       }
-    } else {
+
+      this.agentService.resetSession();
       await this.saveSettings();
+      return;
     }
+
+    await this.saveSettings();
   }
 
   /** Rename a conversation */
-  async renameConversation(conversationId: string, newTitle: string): Promise<void> {
-    const conversation = this.conversations.find((c) => c.id === conversationId);
-    if (conversation) {
-      conversation.title = newTitle.trim() || new Date().toLocaleString(undefined, {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-      conversation.updatedAt = Date.now();
-      await this.saveSettings();
+  async renameConversation(
+    conversationId: string,
+    newTitle: string,
+  ): Promise<void> {
+    const conversation = await this.sessionStorage.loadConversation(conversationId);
+    if (!conversation) return;
+
+    const nextTitle = newTitle.trim();
+    conversation.title = nextTitle || conversation.title;
+    conversation.updatedAt = Date.now();
+
+    await this.sessionStorage.saveConversation(conversation);
+
+    if (this.activeConversation?.id === conversation.id) {
+      this.activeConversation = conversation;
     }
+
+    this.conversations = await this.sessionStorage.listConversations();
   }
 
   /** Get the plugin view */
@@ -195,5 +239,28 @@ export default class OpencodianPlugin extends Plugin {
       return leaves[0].view as OpencodianView;
     }
     return null;
+  }
+
+  private async migrateLegacyConversations(data: unknown): Promise<void> {
+    if (!data || typeof data !== "object") return;
+
+    const record = data as Record<string, unknown>;
+    const legacy = record.conversations;
+    if (!Array.isArray(legacy) || legacy.length === 0) return;
+
+    const existing = await this.sessionStorage.listConversations();
+    if (existing.length > 0) return;
+
+    for (const item of legacy) {
+      if (!item || typeof item !== "object") continue;
+
+      const conv = item as Conversation;
+      if (!conv.id || !conv.title || !Array.isArray(conv.messages)) continue;
+
+      await this.sessionStorage.saveConversation(conv);
+    }
+
+    delete record.conversations;
+    await this.saveData(Object.assign({}, record));
   }
 }

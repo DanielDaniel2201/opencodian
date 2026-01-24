@@ -6,31 +6,44 @@ export interface ChatMessage {
   /** Stable unique identifier for UI operations (edit/regenerate). */
   id: string;
   role: "user" | "assistant";
+  /** Message kind (currently always `message`). */
+  type: "message";
   /**
-   * Message kind.
-   * - `message`: regular user/assistant chat content.
-   * - `error`: legacy format (standalone error message in history).
+   * Timeline items for assistant messages.
+   * User messages should not set this.
    */
-  type?: "message" | "error";
-  content: string;
+  items?: ChatItem[];
   /**
-   * User-visible errors that occurred during this assistant turn.
-   * Stored separately so history can render them as error blocks.
+   * Plain text for user messages.
+   * Assistant messages should not set this.
    */
-  errors?: string[];
+  content?: string;
   timestamp: number;
   images?: ImageAttachment[];
-  /**
-   * Tool invocations the assistant performed while producing this message.
-   * Intentionally does NOT include tool results or thinking content.
-   */
-  toolCalls?: ToolCallInfo[];
   /**
    * File/folder paths mentioned with @ syntax (user messages only).
    * Stored for display purposes - shown as badges above the message.
    */
   mentions?: MentionInfo[];
 }
+
+export type ChatItem =
+  | {
+      type: "text";
+      id: string;
+      timestamp: number;
+      text: string;
+    }
+  | {
+      type: "tool";
+      id: string;
+      timestamp: number;
+      toolUseId: string;
+      toolName: string;
+      input: Record<string, unknown>;
+      status: "running" | "done" | "error";
+      result?: string;
+    };
 
 export interface MentionInfo {
   path: string;
@@ -68,8 +81,6 @@ export interface ConversationMeta {
   title: string;
   createdAt: number;
   updatedAt: number;
-  messageCount: number;
-  preview: string;
 }
 
 /**

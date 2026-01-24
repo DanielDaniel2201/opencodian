@@ -2,7 +2,6 @@
  * Settings types for Opencodian
  */
 
-import type { Conversation } from "./chat";
 import { DEFAULT_MODEL } from "./models";
 
 export interface OpencodianSettings {
@@ -17,7 +16,6 @@ export interface OpencodianSettings {
   permissionMode: "yolo" | "safe";
 
   // Storage
-  conversations: Conversation[];
   activeConversationId: string | null;
 
   // Environment
@@ -41,7 +39,6 @@ export const DEFAULT_SETTINGS: OpencodianSettings = {
   model: DEFAULT_MODEL.id,
   recentModels: [],
   permissionMode: "yolo",
-  conversations: [],
   activeConversationId: null,
   environmentVariables: "",
   systemPrompt: "",
