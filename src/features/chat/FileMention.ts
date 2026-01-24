@@ -237,11 +237,13 @@ export class FileMention {
 
     if (mentionMatch) {
       this.mentionStart = mentionMatch.start;
+      this.loadItems();
       this.filterItems(mentionMatch.query);
       this.show();
-    } else {
-      this.hide();
+      return;
     }
+
+    this.hide();
   }
 
   /** Find @query pattern before cursor */
