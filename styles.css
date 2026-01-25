@@ -567,7 +567,6 @@
   width: 100%;
   min-height: 60px;
   max-height: 200px;
-  resize: none;
   padding: 10px !important;
   border: none !important;
   border-radius: 6px 6px 0 0;
@@ -577,6 +576,8 @@
   font-size: 14px;
   line-height: 1.4;
   box-shadow: none !important;
+  overflow-y: auto;
+  white-space: pre-wrap;
 }
 
 .opencodian-input:hover,
@@ -587,8 +588,10 @@
   box-shadow: none !important;
 }
 
-.opencodian-input::placeholder {
+.opencodian-input[contenteditable="true"]:empty:before {
+  content: attr(data-placeholder);
   color: var(--text-muted);
+  pointer-events: none;
 }
 
 .opencodian-input-toolbar {
@@ -1043,16 +1046,9 @@
   font-size: 13px;
 }
 
-/* Chips Bar (inside input wrapper) */
-.opencodian-mention-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 8px 8px 0 8px;
-}
-
-.opencodian-mention-chip {
-  display: flex;
+/* Inline mention chips (inside contenteditable input) */
+.opencodian-inline-mention-chip {
+  display: inline-flex;
   align-items: center;
   gap: 4px;
   background-color: var(--background-modifier-form-field);
@@ -1061,27 +1057,37 @@
   padding: 2px 6px;
   font-size: 12px;
   color: var(--text-normal);
-  max-width: 100%;
+  vertical-align: baseline;
+  user-select: none;
+  margin: 0 2px;
 }
 
-.opencodian-mention-chip-icon {
+.opencodian-inline-mention-chip-icon {
   display: flex;
   align-items: center;
   color: var(--text-muted);
 }
-.opencodian-mention-chip-icon svg {
+
+.opencodian-inline-mention-chip-icon svg {
   width: 12px;
   height: 12px;
 }
 
-.opencodian-mention-chip-name {
+.opencodian-inline-mention-chip-name {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 150px;
 }
 
-.opencodian-mention-chip-remove {
+.opencodian-inline-mention-chip-click {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.opencodian-inline-mention-chip-remove {
   display: flex;
   align-items: center;
   cursor: pointer;
@@ -1089,13 +1095,20 @@
   margin-left: 2px;
   opacity: 0.7;
 }
-.opencodian-mention-chip-remove:hover {
+
+.opencodian-inline-mention-chip-remove:hover {
   opacity: 1;
   color: var(--text-error);
 }
-.opencodian-mention-chip-remove svg {
+
+.opencodian-inline-mention-chip-remove svg {
   width: 10px;
   height: 10px;
+}
+
+.opencodian-inline-mention-chip-active {
+  background-color: rgba(var(--interactive-accent-rgb), 0.1);
+  border-color: var(--interactive-accent);
 }
 
 /* ========== MESSAGE MENTIONS BADGE ========== */
@@ -1154,32 +1167,7 @@
   color: var(--interactive-accent);
 }
 
-/* Input chip clickable area */
-.opencodian-mention-chip-clickable {
-  cursor: default;
-}
-
-.opencodian-mention-chip-click-area {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-  transition: color 0.15s ease;
-}
-
-.opencodian-mention-chip-click-area:hover {
-  color: var(--interactive-accent);
-}
-
-.opencodian-mention-chip-click-area:hover .opencodian-mention-chip-icon {
-  color: var(--interactive-accent);
-}
-
-/* Active file chip (auto-added) - slightly different styling */
-.opencodian-mention-chip-active {
-  background-color: rgba(var(--interactive-accent-rgb), 0.1);
-  border-color: var(--interactive-accent);
-}
+/* (Legacy input chip styles removed; chips are now inline.) */
 
 /* ========== ERROR MESSAGE (Left Border Style) ========== */
 .opencodian-error-message {

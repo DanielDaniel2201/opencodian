@@ -38,7 +38,7 @@ export class OpencodianView extends ItemView {
   private historyDropdownEl: HTMLElement;
   private isHistoryOpen: boolean = false;
   private messagesEl: HTMLElement;
-  private inputEl: HTMLTextAreaElement;
+  private inputEl: HTMLElement;
   private sendButtonEl: HTMLElement;
   private isGenerating: boolean = false;
   private activeToolBlocks: Map<string, ToolBlock> = new Map();
@@ -157,11 +157,13 @@ export class OpencodianView extends ItemView {
       cls: "opencodian-input-wrapper",
     });
 
-    this.inputEl = inputWrapper.createEl("textarea", {
+    this.inputEl = inputWrapper.createEl("div", {
       cls: "opencodian-input",
       attr: {
-        placeholder: "How can I help you today?",
-        rows: "3",
+        contenteditable: "true",
+        role: "textbox",
+        "aria-multiline": "true",
+        "data-placeholder": "How can I help you today?",
       },
     });
 
@@ -182,18 +184,14 @@ export class OpencodianView extends ItemView {
 
     // Initialize file mention system BEFORE keydown listener
     // so we can check its state
-    this.fileMention = new FileMention(
-      this.plugin.app,
-      this.inputEl,
-      inputWrapper,
-    );
+    this.fileMention = new FileMention(this.plugin.app, this.inputEl, inputWrapper);
 
     // Event listeners
     this.sendButtonEl.addEventListener("click", () =>
       this.handleSendButtonClick(),
     );
+
     this.inputEl.addEventListener("keydown", (e) => {
-      // Don't send if FileMention suggestions are open (user is selecting a file)
       if (this.fileMention?.isSuggestionsOpen()) return;
 
       if (e.key === "Enter" && !e.shiftKey) {
@@ -201,10 +199,6 @@ export class OpencodianView extends ItemView {
         this.handleSendButtonClick();
       }
     });
-
-    // Auto-resize textarea based on content
-    this.inputEl.addEventListener("input", () => this.adjustInputHeight());
-    this.adjustInputHeight();
 
     // Register for file-open events to auto-update active file mention
     this.registerEvent(
@@ -490,7 +484,11 @@ export class OpencodianView extends ItemView {
   }
 
   private async handleSend(): Promise<void> {
-    await this.sendUserMessage(this.inputEl.value, undefined);
+    const input = this.fileMention
+      ? this.fileMention.getTextAndMentionsAndClear()
+      : { text: this.inputEl.textContent || "", mentions: [] };
+
+    await this.sendUserMessage(input.text, input.mentions);
   }
 
   private async sendUserMessage(
@@ -504,8 +502,7 @@ export class OpencodianView extends ItemView {
       mentionItems ??
       (this.fileMention ? this.fileMention.getMentionsAndClear() : []);
 
-    this.inputEl.value = "";
-    this.adjustInputHeight(); // Reset height after clearing
+    this.inputEl.textContent = "";
 
     // Convert to MentionInfo for storage
     const mentions: MentionInfo[] = mentionItemsFinal.map((m) => ({

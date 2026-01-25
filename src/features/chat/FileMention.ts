@@ -1,9 +1,8 @@
 /**
  * FileMention - @ file/folder mention system
- * 
- * Detects "@" in input and shows file suggestions from the vault.
- * Selected files appear as chips in a separate bar above the input.
- * Only shows files that are visible in Obsidian (markdown files and folders).
+ *
+ * IMPORTANT: This implementation targets a `contenteditable` input element.
+ * It inserts inline, clickable chips directly into the text flow.
  */
 
 import { TFolder, TFile, setIcon, type App } from "obsidian";
@@ -17,28 +16,35 @@ export interface MentionItem {
 
 export class FileMention {
   private app: App;
-  private inputEl: HTMLTextAreaElement;
+  private inputEl: HTMLElement;
   private containerEl: HTMLElement;
   private suggestionsEl: HTMLElement | null = null;
-  private chipsBarEl: HTMLElement | null = null;
+
+  private handlePasteBound: (e: ClipboardEvent) => void;
+  private handleDropBound: (e: DragEvent) => void;
+  private handleBeforeInputBound: (e: InputEvent) => void;
+
   private items: MentionItem[] = [];
   private filteredItems: MentionItem[] = [];
   private selectedIndex: number = 0;
-  private mentionStart: number = -1;
+  private mentionRange: Range | null = null;
   private isOpen: boolean = false;
-  
-  /** Currently selected mentions (manually added by user) */
+
   private mentions: MentionItem[] = [];
-  
-  /** Auto-added active file mention (separate from manual mentions) */
   private activeFileMention: MentionItem | null = null;
 
-  constructor(app: App, inputEl: HTMLTextAreaElement, containerEl: HTMLElement) {
+  constructor(app: App, inputEl: HTMLElement, containerEl: HTMLElement) {
     this.app = app;
     this.inputEl = inputEl;
     this.containerEl = containerEl;
+
+    this.handlePasteBound = this.handlePaste.bind(this);
+    this.handleDropBound = this.handleDrop.bind(this);
+    this.handleBeforeInputBound = this.handleBeforeInput.bind(this);
+
     this.init();
   }
+
 
   private init(): void {
     this.loadItems();
@@ -46,24 +52,24 @@ export class FileMention {
     this.inputEl.addEventListener("input", this.handleInput.bind(this));
     this.inputEl.addEventListener("keydown", this.handleKeyDown.bind(this));
     this.inputEl.addEventListener("blur", this.handleBlur.bind(this));
+    this.inputEl.addEventListener("paste", this.handlePasteBound);
+    this.inputEl.addEventListener("drop", this.handleDropBound);
+    this.inputEl.addEventListener("beforeinput", this.handleBeforeInputBound);
 
-    this.createChipsBar();
+
     this.createSuggestionsEl();
   }
 
-  /** Load files and folders from vault - all Obsidian-visible files (not just markdown) */
+  /** Load files and folders from vault - all Obsidian-visible files */
   private loadItems(): void {
     const items: MentionItem[] = [];
     const seenFolders = new Set<string>();
 
-    // Use vault.getFiles() to get ALL files Obsidian tracks (md, canvas, excalidraw, etc.)
-    // This excludes hidden files (starting with .) that Obsidian doesn't show
     const allFiles = this.app.vault.getFiles();
-    
+
     for (const file of allFiles) {
       if (this.isHiddenPath(file.path)) continue;
-      
-      // Add parent folders
+
       const parts = file.path.split("/");
       let folderPath = "";
       for (let i = 0; i < parts.length - 1; i++) {
@@ -77,8 +83,7 @@ export class FileMention {
           });
         }
       }
-      
-      // Add file
+
       items.push({
         path: file.path,
         name: file.name,
@@ -102,15 +107,6 @@ export class FileMention {
     return false;
   }
 
-  /** Create chips bar above input */
-  private createChipsBar(): void {
-    this.chipsBarEl = document.createElement("div");
-    this.chipsBarEl.className = "opencodian-mention-chips";
-    this.chipsBarEl.style.display = "none";
-    // Insert before the textarea
-    this.containerEl.insertBefore(this.chipsBarEl, this.inputEl);
-  }
-
   /** Create the suggestions dropdown */
   private createSuggestionsEl(): void {
     this.suggestionsEl = document.createElement("div");
@@ -119,146 +115,115 @@ export class FileMention {
     this.containerEl.appendChild(this.suggestionsEl);
   }
 
-  /** Render chips bar */
-  private renderChips(): void {
-    if (!this.chipsBarEl) return;
-    this.chipsBarEl.innerHTML = "";
+  private handlePaste(e: ClipboardEvent): void {
+    e.preventDefault();
 
-    // Combine active file mention (if any) with manual mentions
-    const allMentions: MentionItem[] = [];
-    if (this.activeFileMention) {
-      allMentions.push(this.activeFileMention);
-    }
-    // Add manual mentions (excluding the active file if it was manually added too)
-    for (const m of this.mentions) {
-      if (!this.activeFileMention || m.path !== this.activeFileMention.path) {
-        allMentions.push(m);
-      }
-    }
+    const text = e.clipboardData?.getData("text/plain") ?? "";
+    this.insertPlainTextAtCursor(text);
+  }
 
-    if (allMentions.length === 0) {
-      this.chipsBarEl.style.display = "none";
+  private handleDrop(e: DragEvent): void {
+    e.preventDefault();
+
+    const text = e.dataTransfer?.getData("text/plain") ?? "";
+    this.insertPlainTextAtCursor(text);
+  }
+
+  private handleBeforeInput(e: InputEvent): void {
+    if (e.inputType !== "insertFromPaste" && e.inputType !== "insertFromDrop") {
       return;
     }
 
-    this.chipsBarEl.style.display = "flex";
+    e.preventDefault();
 
-    for (let i = 0; i < allMentions.length; i++) {
-      const item = allMentions[i];
-      const isActiveFile = this.activeFileMention && item.path === this.activeFileMention.path;
-      
-      const chipEl = document.createElement("div");
-      chipEl.className = "opencodian-mention-chip opencodian-mention-chip-clickable";
-      if (isActiveFile) {
-        chipEl.classList.add("opencodian-mention-chip-active");
-      }
-
-      // Click to open file (on icon and name area)
-      const clickArea = document.createElement("span");
-      clickArea.className = "opencodian-mention-chip-click-area";
-      clickArea.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.openFile(item.path);
-      });
-
-      // Icon
-      const iconEl = document.createElement("span");
-      iconEl.className = "opencodian-mention-chip-icon";
-      setIcon(iconEl, item.isFolder ? "folder" : "file-text");
-      clickArea.appendChild(iconEl);
-
-      // Name only (not full path)
-      const nameEl = document.createElement("span");
-      nameEl.className = "opencodian-mention-chip-name";
-      nameEl.textContent = item.name;
-      nameEl.title = item.path; // Show full path on hover
-      clickArea.appendChild(nameEl);
-
-      chipEl.appendChild(clickArea);
-
-      // Remove button (for active file, removes it from auto-tracking; for manual, removes from list)
-      const removeEl = document.createElement("span");
-      removeEl.className = "opencodian-mention-chip-remove";
-      setIcon(removeEl, "x");
-      removeEl.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (isActiveFile) {
-          this.activeFileMention = null;
-        } else {
-          this.removeMention(item);
-        }
-        this.renderChips();
-      });
-      chipEl.appendChild(removeEl);
-
-      this.chipsBarEl.appendChild(chipEl);
-    }
-  }
-
-  /** Open a file in Obsidian */
-  openFile(path: string): void {
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (!file) return;
-    
-    if (file instanceof TFile) {
-      // Open file in a new leaf
-      const leaf = this.app.workspace.getLeaf(false);
-      if (leaf) {
-        leaf.openFile(file);
-      }
-    } else if (file instanceof TFolder) {
-      // For folders, reveal in file explorer
-      const fileExplorer = this.app.workspace.getLeavesOfType("file-explorer")[0];
-      if (fileExplorer) {
-        this.app.workspace.revealLeaf(fileExplorer);
-        // Try to expand the folder in the file explorer
-        const explorerView = fileExplorer.view as any;
-        if (explorerView?.revealInFolder) {
-          explorerView.revealInFolder(file);
-        }
-      }
-    }
-  }
-
-  /** Remove a mention */
-  private removeMention(item: MentionItem): void {
-    this.mentions = this.mentions.filter(m => m.path !== item.path);
-    this.renderChips();
-  }
-
-  /** Handle input changes - detect @ trigger */
-  private handleInput(): void {
-    const cursorPos = this.inputEl.selectionStart;
-    const text = this.inputEl.value;
-
-    const mentionMatch = this.findMentionTrigger(text, cursorPos);
-
-    if (mentionMatch) {
-      this.mentionStart = mentionMatch.start;
-      this.loadItems();
-      this.filterItems(mentionMatch.query);
-      this.show();
+    const data = e.dataTransfer;
+    if (data) {
+      const text = data.getData("text/plain") ?? "";
+      this.insertPlainTextAtCursor(text);
       return;
     }
 
-    this.hide();
+    const clipboard = (e as unknown as { clipboardData?: DataTransfer }).clipboardData;
+    const text = clipboard?.getData("text/plain") ?? "";
+    this.insertPlainTextAtCursor(text);
   }
 
-  /** Find @query pattern before cursor */
-  private findMentionTrigger(text: string, cursorPos: number): { start: number; query: string } | null {
-    const beforeCursor = text.slice(0, cursorPos);
-    
+  private insertPlainTextAtCursor(text: string): void {
+    const normalized = text.replace(/\r\n/g, "\n");
+    const range = this.getSelectionRangeInInput();
+
+    if (!range) {
+      this.inputEl.appendChild(document.createTextNode(normalized));
+      this.moveCaretToEnd();
+      return;
+    }
+
+    range.deleteContents();
+    const node = document.createTextNode(normalized);
+    range.insertNode(node);
+
+    range.setStartAfter(node);
+    range.collapse(true);
+
+    const sel = window.getSelection();
+    if (!sel) return;
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  private moveCaretToEnd(): void {
+    const range = document.createRange();
+    range.selectNodeContents(this.inputEl);
+    range.collapse(false);
+
+    const sel = window.getSelection();
+    if (!sel) return;
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  private getSelectionRangeInInput(): Range | null {
+
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return null;
+
+    const range = sel.getRangeAt(0);
+    if (!this.inputEl.contains(range.startContainer)) return null;
+
+    return range;
+  }
+
+  private getTextBeforeCursor(maxChars: number = 200): string {
+    const range = this.getSelectionRangeInInput();
+    if (!range) return "";
+
+    const sel = window.getSelection();
+    if (!sel) return "";
+
+    const scan = range.cloneRange();
+    scan.collapse(true);
+    scan.setStart(this.inputEl, 0);
+
+    const text = scan.toString();
+    if (text.length <= maxChars) return text;
+
+    return text.slice(-maxChars);
+  }
+
+  /** Find the @query trigger right before cursor */
+  private findMentionTrigger(beforeCursor: string): { query: string } | null {
     let atIndex = -1;
+
     for (let i = beforeCursor.length - 1; i >= 0; i--) {
-      if (beforeCursor[i] === "@") {
+      const ch = beforeCursor[i];
+      if (ch === "@") {
         if (i === 0 || /\s/.test(beforeCursor[i - 1])) {
           atIndex = i;
           break;
         }
       }
-      if (/\s/.test(beforeCursor[i]) && i !== beforeCursor.length - 1) {
+
+      if (/\s/.test(ch) && i !== beforeCursor.length - 1) {
         break;
       }
     }
@@ -268,18 +233,111 @@ export class FileMention {
     const query = beforeCursor.slice(atIndex + 1);
     if (query.includes("\n")) return null;
 
-    return { start: atIndex, query };
+    this.mentionRange = this.computeMentionRange(atIndex, beforeCursor.length);
+    if (!this.mentionRange) return null;
+
+    return { query };
+  }
+
+  private computeMentionRange(atIndex: number, cursorIndex: number): Range | null {
+    const range = this.getSelectionRangeInInput();
+    if (!range) return null;
+
+    const full = range.cloneRange();
+    full.collapse(true);
+    full.setStart(this.inputEl, 0);
+
+    const text = full.toString();
+    const skip = Math.max(text.length - cursorIndex, 0);
+
+    const startOffsetInText = text.length - cursorIndex + atIndex;
+    const endOffsetInText = text.length - skip;
+
+    return this.rangeFromTextOffsets(startOffsetInText, endOffsetInText);
+  }
+
+  private rangeFromTextOffsets(start: number, end: number): Range | null {
+    const walker = document.createTreeWalker(
+      this.inputEl,
+      NodeFilter.SHOW_TEXT,
+      null,
+    );
+
+    let node = walker.nextNode() as Text | null;
+    let offset = 0;
+
+    const makePoint = (absolute: number): { node: Text; offset: number } | null => {
+      let current = node;
+      let currentOffset = offset;
+
+      while (current) {
+        const len = current.data.length;
+        if (absolute <= currentOffset + len) {
+          return { node: current, offset: Math.max(0, absolute - currentOffset) };
+        }
+        currentOffset += len;
+        current = walker.nextNode() as Text | null;
+      }
+      return null;
+    };
+
+    node = walker.currentNode as Text | null;
+    offset = 0;
+
+    // Reset walker state
+    walker.currentNode = this.inputEl;
+    node = walker.nextNode() as Text | null;
+    offset = 0;
+
+    const startPoint = makePoint(start);
+
+    // Reset walker again because makePoint consumed it
+    walker.currentNode = this.inputEl;
+    node = walker.nextNode() as Text | null;
+    offset = 0;
+
+    const endPoint = makePoint(end);
+
+    if (!startPoint || !endPoint) return null;
+
+    const r = document.createRange();
+    r.setStart(startPoint.node, startPoint.offset);
+    r.setEnd(endPoint.node, endPoint.offset);
+    return r;
+  }
+
+  /** Handle input changes - detect @ trigger */
+  private handleInput(): void {
+    // Remove active mention chip if editor is empty besides it.
+    if (this.activeFileMention) {
+      const text = this.getPlainText().trim();
+      if (!text) {
+        // Keep active mention as a chip even if there's no text.
+      }
+    }
+
+    const beforeCursor = this.getTextBeforeCursor();
+    const mentionMatch = this.findMentionTrigger(beforeCursor);
+
+    if (mentionMatch) {
+      this.loadItems();
+      this.filterItems(mentionMatch.query);
+      this.show();
+      return;
+    }
+
+    this.hide();
   }
 
   /** Filter items based on query */
   private filterItems(query: string): void {
     const lowerQuery = query.toLowerCase();
-    const mentionedPaths = new Set(this.mentions.map(m => m.path));
-    
-    let filtered = this.items.filter(item => !mentionedPaths.has(item.path));
-    
+    const mentionedPaths = new Set(this.mentions.map((m) => m.path));
+
+    let filtered = this.items.filter((item) => !mentionedPaths.has(item.path));
+
     if (query) {
-      filtered = filtered.filter(item => {
+      filtered = filtered.filter((item) => {
         const lowerPath = item.path.toLowerCase();
         const lowerName = item.name.toLowerCase();
         return lowerPath.includes(lowerQuery) || lowerName.includes(lowerQuery);
@@ -312,13 +370,11 @@ export class FileMention {
         itemEl.classList.add("selected");
       }
 
-      // Flat line icon
       const iconEl = document.createElement("span");
       iconEl.className = "opencodian-mention-icon";
       setIcon(iconEl, item.isFolder ? "folder" : "file-text");
       itemEl.appendChild(iconEl);
 
-      // Path display
       const pathEl = document.createElement("span");
       pathEl.className = "opencodian-mention-path";
       pathEl.textContent = item.path;
@@ -352,7 +408,7 @@ export class FileMention {
     }
   }
 
-  /** Handle keyboard navigation with cyclic scrolling */
+  /** Handle keyboard navigation */
   private handleKeyDown(e: KeyboardEvent): void {
     if (!this.isOpen) return;
 
@@ -363,7 +419,6 @@ export class FileMention {
       case "ArrowDown":
         e.preventDefault();
         e.stopPropagation();
-        // Cyclic: wrap to top when at bottom
         this.selectedIndex = (this.selectedIndex + 1) % len;
         this.updateSelection();
         break;
@@ -371,14 +426,13 @@ export class FileMention {
       case "ArrowUp":
         e.preventDefault();
         e.stopPropagation();
-        // Cyclic: wrap to bottom when at top
         this.selectedIndex = (this.selectedIndex - 1 + len) % len;
         this.updateSelection();
         break;
 
       case "Enter":
         e.preventDefault();
-        e.stopImmediatePropagation(); // Critical: prevent View's keydown handler from sending
+        e.stopImmediatePropagation();
         this.selectItem(this.filteredItems[this.selectedIndex]);
         break;
 
@@ -400,22 +454,108 @@ export class FileMention {
     setTimeout(() => this.hide(), 150);
   }
 
-  /** Select an item - add to chips, remove @query from input */
-  private selectItem(item: MentionItem): void {
-    // Add to mentions
-    if (!this.mentions.find(m => m.path === item.path)) {
-      this.mentions.push(item);
-      this.renderChips();
+  private createInlineChip(item: MentionItem, isActive: boolean): HTMLElement {
+    const chipEl = document.createElement("span");
+    chipEl.className = "opencodian-inline-mention-chip";
+    if (isActive) {
+      chipEl.classList.add("opencodian-inline-mention-chip-active");
     }
 
-    // Remove @query from input
-    const text = this.inputEl.value;
-    const cursorPos = this.inputEl.selectionStart;
-    const before = text.slice(0, this.mentionStart);
-    const after = text.slice(cursorPos);
-    
-    this.inputEl.value = before + after;
-    this.inputEl.setSelectionRange(before.length, before.length);
+    chipEl.setAttribute("contenteditable", "false");
+    chipEl.setAttribute("data-mention-path", item.path);
+    chipEl.setAttribute("data-mention-name", item.name);
+    chipEl.setAttribute("data-mention-folder", item.isFolder ? "1" : "0");
+    chipEl.title = item.path;
+
+    const clickArea = document.createElement("span");
+    clickArea.className = "opencodian-inline-mention-chip-click";
+    clickArea.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.openFile(item.path);
+    });
+
+    const iconEl = document.createElement("span");
+    iconEl.className = "opencodian-inline-mention-chip-icon";
+    setIcon(iconEl, item.isFolder ? "folder" : "file-text");
+    clickArea.appendChild(iconEl);
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "opencodian-inline-mention-chip-name";
+    nameEl.textContent = item.name;
+    clickArea.appendChild(nameEl);
+
+    chipEl.appendChild(clickArea);
+
+    const removeEl = document.createElement("span");
+    removeEl.className = "opencodian-inline-mention-chip-remove";
+    setIcon(removeEl, "x");
+    removeEl.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.removeMention(item);
+      chipEl.remove();
+    });
+    chipEl.appendChild(removeEl);
+
+    return chipEl;
+  }
+
+  private insertNodeAtCursor(node: Node): void {
+    const range = this.getSelectionRangeInInput();
+    if (!range) {
+      this.inputEl.appendChild(node);
+      return;
+    }
+
+    range.insertNode(node);
+
+    const after = document.createRange();
+    after.setStartAfter(node);
+    after.collapse(true);
+
+    const sel = window.getSelection();
+    if (!sel) return;
+
+    sel.removeAllRanges();
+    sel.addRange(after);
+  }
+
+  private insertTextAtCursor(text: string): void {
+    const node = document.createTextNode(text);
+    this.insertNodeAtCursor(node);
+  }
+
+  /** Select an item - insert chip and remove @query */
+  private selectItem(item: MentionItem): void {
+    if (!this.mentions.find((m) => m.path === item.path)) {
+      this.mentions.push(item);
+    }
+
+    if (this.mentionRange) {
+      this.mentionRange.deleteContents();
+
+      const chipEl = this.createInlineChip(item, false);
+      this.mentionRange.insertNode(chipEl);
+
+      const space = document.createTextNode(" ");
+      chipEl.after(space);
+
+      const after = document.createRange();
+      after.setStartAfter(space);
+      after.collapse(true);
+
+      const sel = window.getSelection();
+      if (sel) {
+        sel.removeAllRanges();
+        sel.addRange(after);
+      }
+
+      this.mentionRange = null;
+    } else {
+      this.insertNodeAtCursor(this.createInlineChip(item, false));
+      this.insertTextAtCursor(" ");
+    }
 
     this.hide();
     this.inputEl.focus();
@@ -431,12 +571,107 @@ export class FileMention {
     if (!this.suggestionsEl) return;
     this.isOpen = false;
     this.suggestionsEl.style.display = "none";
-    this.mentionStart = -1;
+    this.mentionRange = null;
+  }
+
+  /** Open a file in Obsidian */
+  openFile(path: string): void {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!file) return;
+
+    if (file instanceof TFile) {
+      const leaf = this.app.workspace.getLeaf(false);
+      if (leaf) {
+        leaf.openFile(file);
+      }
+      return;
+    }
+
+    if (file instanceof TFolder) {
+      const fileExplorer = this.app.workspace.getLeavesOfType("file-explorer")[0];
+      if (fileExplorer) {
+        this.app.workspace.revealLeaf(fileExplorer);
+        const explorerView = fileExplorer.view as any;
+        if (explorerView?.revealInFolder) {
+          explorerView.revealInFolder(file);
+        }
+      }
+    }
+  }
+
+  private removeMention(item: MentionItem): void {
+    this.mentions = this.mentions.filter((m) => m.path !== item.path);
+
+    // If active file chip removed, disable it.
+    if (this.activeFileMention && this.activeFileMention.path === item.path) {
+      this.activeFileMention = null;
+    }
   }
 
   /** Get current mention paths */
   getMentionPaths(): string[] {
-    return this.mentions.map(m => m.path);
+    return this.getMentionsFromDom().map((m) => m.path);
+  }
+
+  private getMentionsFromDom(): MentionItem[] {
+    const els = this.inputEl.querySelectorAll(
+      ".opencodian-inline-mention-chip[data-mention-path]",
+    );
+
+    const out: MentionItem[] = [];
+    for (const el of Array.from(els)) {
+      const path = el.getAttribute("data-mention-path") || "";
+      const name = el.getAttribute("data-mention-name") || "";
+      const isFolder = el.getAttribute("data-mention-folder") === "1";
+      if (!path) continue;
+      out.push({ path, name, isFolder });
+    }
+    return out;
+  }
+
+  /**
+   * Extract plain text & mentions then clear input.
+   * Chips become their `name` in the returned text.
+   */
+  getTextAndMentionsAndClear(): { text: string; mentions: MentionItem[] } {
+    const mentions = this.getMentionsFromDom();
+    const text = this.getPlainTextWithMentionNames();
+
+    this.clearMentions();
+    this.clearInput();
+
+    return { text, mentions };
+  }
+
+  private clearInput(): void {
+    this.inputEl.innerHTML = "";
+  }
+
+  private getPlainText(): string {
+    return this.inputEl.textContent || "";
+  }
+
+  private getPlainTextWithMentionNames(): string {
+    const clone = this.inputEl.cloneNode(true) as HTMLElement;
+
+    const chips = clone.querySelectorAll(
+      ".opencodian-inline-mention-chip[data-mention-name]",
+    );
+    for (const chip of Array.from(chips)) {
+      const name = chip.getAttribute("data-mention-name") || "";
+      chip.replaceWith(document.createTextNode(name));
+    }
+
+    return (clone.textContent || "").trim();
+  }
+
+  /** Clear all mentions (both manual and active file) */
+  clearMentions(): void {
+    this.mentions = [];
+    this.activeFileMention = null;
+
+    const chips = this.inputEl.querySelectorAll(".opencodian-inline-mention-chip");
+    chips.forEach((el) => el.remove());
   }
 
   /** Check if suggestions dropdown is open */
@@ -448,21 +683,17 @@ export class FileMention {
     this.loadItems();
   }
 
-  /** Add a mention programmatically (e.g., for active file tracking) */
+  /** Add a mention programmatically */
   addMention(path: string): boolean {
-    // Check if already mentioned
-    if (this.mentions.find(m => m.path === path)) {
+    if (this.mentions.find((m) => m.path === path)) {
       return false;
     }
-    
-    // Find item in our list
-    const item = this.items.find(i => i.path === path);
+
+    const item = this.items.find((i) => i.path === path);
     if (!item) {
-      // Item not in our markdown files list - could be a non-markdown file
-      // Create a basic item for it
       const file = this.app.vault.getAbstractFileByPath(path);
       if (!file) return false;
-      
+
       this.mentions.push({
         path: path,
         name: file.name,
@@ -471,111 +702,62 @@ export class FileMention {
     } else {
       this.mentions.push(item);
     }
-    
-    this.renderChips();
+
     return true;
   }
 
-  /** Set the active file mention (REPLACES previous active file, not accumulate) */
+  /** Set the active file mention (insert or update a pinned chip) */
   setActiveFileMention(path: string | null): void {
+    const existing = this.inputEl.querySelector(
+      ".opencodian-inline-mention-chip-active[data-mention-path]",
+    ) as HTMLElement | null;
+
     if (!path) {
-      // No active file - clear the active file mention
       this.activeFileMention = null;
-      this.renderChips();
+      if (existing) existing.remove();
       return;
     }
-    
-    // If it's the same file, do nothing
+
     if (this.activeFileMention && this.activeFileMention.path === path) {
       return;
     }
-    
-    // Create new active file mention item
+
     const file = this.app.vault.getAbstractFileByPath(path);
     if (!file) {
       this.activeFileMention = null;
-      this.renderChips();
+      if (existing) existing.remove();
       return;
     }
-    
-    this.activeFileMention = {
+
+    const item: MentionItem = {
       path: path,
       name: file.name,
       isFolder: file instanceof TFolder,
     };
-    
-    this.renderChips();
-  }
+    this.activeFileMention = item;
 
-  /** Clear all mentions (both manual and active file) */
-  clearMentions(): void {
-    this.mentions = [];
-    this.activeFileMention = null;
-    this.renderChips();
+    if (existing) existing.remove();
+
+    const chipEl = this.createInlineChip(item, true);
+    this.inputEl.insertBefore(chipEl, this.inputEl.firstChild);
+    this.inputEl.insertBefore(document.createTextNode(" "), chipEl.nextSibling);
   }
 
   /** Get all mentions (active file + manual) and clear them */
   getMentionsAndClear(): MentionItem[] {
-    const result: MentionItem[] = [];
-    
-    // Add active file first
-    if (this.activeFileMention) {
-      result.push(this.activeFileMention);
-    }
-    
-    // Add manual mentions (excluding active file if duplicated)
-    for (const m of this.mentions) {
-      if (!this.activeFileMention || m.path !== this.activeFileMention.path) {
-        result.push(m);
-      }
-    }
-    
-    // Clear all
-    this.mentions = [];
-    this.activeFileMention = null;
-    this.renderChips();
-    
+    const result = this.getMentionsFromDom();
+    this.clearMentions();
     return result;
   }
 
-  /** Create a clickable chip element for use outside this component (e.g., in message bubbles) */
-  static createChipElement(
-    app: App,
-    path: string,
-    name: string,
-    isFolder: boolean,
-    openFile: (path: string) => void
-  ): HTMLElement {
-    const chipEl = document.createElement("div");
-    chipEl.className = "message-mention-chip message-mention-chip-clickable";
-    chipEl.style.cursor = "pointer";
-    chipEl.title = path;
-    
-    chipEl.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openFile(path);
-    });
-
-    const iconEl = document.createElement("span");
-    iconEl.className = "message-mention-icon";
-    setIcon(iconEl, isFolder ? "folder" : "file-text");
-    chipEl.appendChild(iconEl);
-
-    const nameEl = document.createElement("span");
-    nameEl.className = "message-mention-name";
-    nameEl.textContent = name;
-    chipEl.appendChild(nameEl);
-
-    return chipEl;
-  }
-
   destroy(): void {
+    this.inputEl.removeEventListener("paste", this.handlePasteBound);
+    this.inputEl.removeEventListener("drop", this.handleDropBound);
+    this.inputEl.removeEventListener("beforeinput", this.handleBeforeInputBound);
+
     if (this.suggestionsEl) {
       this.suggestionsEl.remove();
     }
-    if (this.chipsBarEl) {
-      this.chipsBarEl.remove();
-    }
   }
+
 }
