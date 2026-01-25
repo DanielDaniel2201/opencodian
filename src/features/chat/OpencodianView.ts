@@ -1574,6 +1574,11 @@ export class OpencodianView extends ItemView {
     input: Record<string, unknown>,
     toolUseId: string,
   ): void {
+    if (toolName === "todowrite") {
+      this.renderTodoWriteToolBlock(bubbleEl, input, toolUseId);
+      return;
+    }
+
     // If we already rendered this tool invocation (same id), update it instead of creating a new block.
     // OpenCode can emit multiple updates for the same tool part (e.g. pending -> running), and
     // creating a second block leaves the first stuck in "Running..." forever.
@@ -1702,6 +1707,174 @@ export class OpencodianView extends ItemView {
       contentEl,
       isCollapsed: false,
     });
+  }
+
+  private renderTodoWriteToolBlock(
+    bubbleEl: HTMLElement,
+    input: Record<string, unknown>,
+    toolUseId: string,
+  ): void {
+    const todos = this.parseTodoWriteTodos(input);
+
+    const existing = this.activeToolBlocks.get(toolUseId);
+    if (existing) {
+      const listEl = existing.contentEl.querySelector(
+        ".opencodian-todo-list",
+      ) as HTMLElement | null;
+      if (listEl) {
+        this.renderTodoListItems(listEl, todos);
+      }
+
+      const progressEl = existing.headerEl.querySelector(
+        ".opencodian-todo-progress",
+      ) as HTMLElement | null;
+      if (progressEl) {
+        progressEl.textContent = this.getTodoProgressText(todos);
+      }
+
+      const statusEl = existing.headerEl.querySelector(
+        ".tool-status",
+      ) as HTMLElement | null;
+      if (statusEl) {
+        statusEl.textContent = "Running...";
+        statusEl.className = "tool-status running";
+      }
+
+      return;
+    }
+
+    const blockEl = document.createElement("div");
+    blockEl.className = "tool-block opencodian-todo-tool";
+    blockEl.setAttribute("data-tool-id", toolUseId);
+
+    const headerEl = document.createElement("div");
+    headerEl.className = "tool-header";
+
+    const iconEl = document.createElement("span");
+    iconEl.className = "tool-icon";
+    setIcon(iconEl, "list-todo");
+
+    const labelEl = document.createElement("span");
+    labelEl.className = "tool-label";
+    labelEl.textContent = "Task Plan";
+
+    const progressEl = document.createElement("span");
+    progressEl.className = "opencodian-todo-progress";
+    progressEl.textContent = this.getTodoProgressText(todos);
+
+    const statusEl = document.createElement("span");
+    statusEl.className = "tool-status running";
+    statusEl.textContent = "Running...";
+
+    const chevronEl = document.createElement("span");
+    chevronEl.className = "tool-chevron";
+    setIcon(chevronEl, "chevron-down");
+
+    headerEl.appendChild(iconEl);
+    headerEl.appendChild(labelEl);
+    headerEl.appendChild(progressEl);
+    headerEl.appendChild(statusEl);
+    headerEl.appendChild(chevronEl);
+
+    const contentEl = document.createElement("div");
+    contentEl.className = "tool-content opencodian-todo-content";
+
+    const listEl = document.createElement("div");
+    listEl.className = "opencodian-todo-list";
+    this.renderTodoListItems(listEl, todos);
+    contentEl.appendChild(listEl);
+
+    // Note: We intentionally do NOT create a result section for todowrite
+    // because the todo list itself is the visual representation of the state.
+    // The generic renderToolResultBlock will look for .tool-result-section
+    // and fail to find it, which is exactly what we want (no raw JSON dump).
+
+    blockEl.appendChild(headerEl);
+    blockEl.appendChild(contentEl);
+
+    bubbleEl.appendChild(blockEl);
+
+    headerEl.addEventListener("click", () => {
+      const isCollapsed = blockEl.classList.toggle("collapsed");
+      setIcon(chevronEl, isCollapsed ? "chevron-right" : "chevron-down");
+      const block = this.activeToolBlocks.get(toolUseId);
+      if (block) {
+        block.isCollapsed = isCollapsed;
+      }
+    });
+
+    this.activeToolBlocks.set(toolUseId, {
+      el: blockEl,
+      headerEl,
+      contentEl,
+      isCollapsed: false,
+    });
+  }
+
+  private parseTodoWriteTodos(input: Record<string, unknown>): Array<Record<string, unknown>> {
+    const raw = input.todos;
+    if (!Array.isArray(raw)) return [];
+
+    const todos: Array<Record<string, unknown>> = [];
+    for (const item of raw) {
+      if (!item || typeof item !== "object") continue;
+      todos.push(item as Record<string, unknown>);
+    }
+
+    return todos;
+  }
+
+  private getTodoProgressText(todos: Array<Record<string, unknown>>): string {
+    if (todos.length === 0) return "";
+
+    let completed = 0;
+    for (const todo of todos) {
+      if (todo.status === "completed") {
+        completed += 1;
+      }
+    }
+
+    return `${completed}/${todos.length}`;
+  }
+
+  private renderTodoListItems(
+    listEl: HTMLElement,
+    todos: Array<Record<string, unknown>>,
+  ): void {
+    listEl.empty();
+
+    for (const todo of todos) {
+      const rowEl = listEl.createDiv({ cls: "opencodian-todo-item" });
+
+      const statusEl = rowEl.createDiv({ cls: "opencodian-todo-status" });
+      const status = typeof todo.status === "string" ? todo.status : "pending";
+      if (status === "completed") {
+        statusEl.addClass("is-completed");
+        statusEl.setText("✓");
+      }
+
+      if (status === "in_progress") {
+        statusEl.addClass("is-in-progress");
+        statusEl.setText("•");
+      }
+
+      if (status !== "completed" && status !== "in_progress") {
+        statusEl.addClass("is-pending");
+        statusEl.setText("○");
+      }
+
+      const textEl = rowEl.createDiv({ cls: "opencodian-todo-text" });
+      const content = typeof todo.content === "string" ? todo.content : "";
+      textEl.setText(content);
+
+      if (status === "completed") {
+        rowEl.addClass("is-completed");
+      }
+
+      if (status === "in_progress") {
+        rowEl.addClass("is-in-progress");
+      }
+    }
   }
 
   /**

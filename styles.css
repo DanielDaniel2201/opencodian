@@ -529,6 +529,65 @@
   display: none;
 }
 
+/* ========== TODO TOOL CARD ========== */
+.opencodian-todo-tool .tool-header {
+  gap: 8px;
+}
+
+.opencodian-todo-progress {
+  margin-left: 6px;
+  font-size: 0.8em;
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+}
+
+.opencodian-todo-content {
+  padding: 10px 12px;
+}
+
+.opencodian-todo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.opencodian-todo-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.opencodian-todo-status {
+  width: 16px;
+  flex: 0 0 16px;
+  line-height: 1.2;
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  text-align: center;
+}
+
+.opencodian-todo-status.is-completed {
+  color: var(--text-success);
+}
+
+.opencodian-todo-status.is-in-progress {
+  color: var(--text-accent);
+}
+
+.opencodian-todo-text {
+  flex: 1;
+  color: var(--text-normal);
+}
+
+.opencodian-todo-item.is-completed .opencodian-todo-text {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.opencodian-todo-item.is-in-progress .opencodian-todo-text {
+  font-weight: 600;
+}
+
 .tool-chevron {
   display: flex;
   align-items: center;
