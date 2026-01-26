@@ -45,7 +45,6 @@ export class FileMention {
     this.init();
   }
 
-
   private init(): void {
     this.loadItems();
 
@@ -55,7 +54,6 @@ export class FileMention {
     this.inputEl.addEventListener("paste", this.handlePasteBound);
     this.inputEl.addEventListener("drop", this.handleDropBound);
     this.inputEl.addEventListener("beforeinput", this.handleBeforeInputBound);
-
 
     this.createSuggestionsEl();
   }
@@ -143,7 +141,8 @@ export class FileMention {
       return;
     }
 
-    const clipboard = (e as unknown as { clipboardData?: DataTransfer }).clipboardData;
+    const clipboard = (e as unknown as { clipboardData?: DataTransfer })
+      .clipboardData;
     const text = clipboard?.getData("text/plain") ?? "";
     this.insertPlainTextAtCursor(text);
   }
@@ -183,7 +182,6 @@ export class FileMention {
   }
 
   private getSelectionRangeInInput(): Range | null {
-
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return null;
 
@@ -239,7 +237,10 @@ export class FileMention {
     return { query };
   }
 
-  private computeMentionRange(atIndex: number, cursorIndex: number): Range | null {
+  private computeMentionRange(
+    atIndex: number,
+    cursorIndex: number,
+  ): Range | null {
     const range = this.getSelectionRangeInInput();
     if (!range) return null;
 
@@ -266,14 +267,19 @@ export class FileMention {
     let node = walker.nextNode() as Text | null;
     let offset = 0;
 
-    const makePoint = (absolute: number): { node: Text; offset: number } | null => {
+    const makePoint = (
+      absolute: number,
+    ): { node: Text; offset: number } | null => {
       let current = node;
       let currentOffset = offset;
 
       while (current) {
         const len = current.data.length;
         if (absolute <= currentOffset + len) {
-          return { node: current, offset: Math.max(0, absolute - currentOffset) };
+          return {
+            node: current,
+            offset: Math.max(0, absolute - currentOffset),
+          };
         }
         currentOffset += len;
         current = walker.nextNode() as Text | null;
@@ -306,8 +312,14 @@ export class FileMention {
     return r;
   }
 
+  /** Zero Width Space - used to ensure cursor can be placed before/after chips */
+  private static readonly ZWS = "\u200B";
+
   /** Handle input changes - detect @ trigger */
   private handleInput(): void {
+    // Ensure chips always have ZWS before them for cursor positioning
+    this.ensureChipZWS();
+
     // Remove active mention chip if editor is empty besides it.
     if (this.activeFileMention) {
       const text = this.getPlainText().trim();
@@ -327,6 +339,34 @@ export class FileMention {
     }
 
     this.hide();
+  }
+
+  /**
+   * Ensure every chip has a ZWS before it for cursor positioning.
+   * This prevents the bug where deleting all text before a chip
+   * causes it to jump lines and become unreachable.
+   */
+  private ensureChipZWS(): void {
+    const chips = this.inputEl.querySelectorAll(
+      ".opencodian-inline-mention-chip",
+    );
+
+    for (const chip of Array.from(chips)) {
+      const prev = chip.previousSibling;
+
+      // Check if previous sibling is a text node ending with ZWS
+      if (!prev || prev.nodeType !== Node.TEXT_NODE) {
+        // No text node before chip - insert ZWS
+        const zws = document.createTextNode(FileMention.ZWS);
+        chip.parentNode?.insertBefore(zws, chip);
+      } else {
+        const textNode = prev as Text;
+        // If text node is empty or doesn't end with our ZWS, add one
+        if (textNode.data.length === 0) {
+          textNode.data = FileMention.ZWS;
+        }
+      }
+    }
   }
 
   /** Filter items based on query */
@@ -397,7 +437,9 @@ export class FileMention {
   /** Update visual selection */
   private updateSelection(): void {
     if (!this.suggestionsEl) return;
-    const items = this.suggestionsEl.querySelectorAll(".opencodian-mention-item");
+    const items = this.suggestionsEl.querySelectorAll(
+      ".opencodian-mention-item",
+    );
     items.forEach((el, i) => {
       el.classList.toggle("selected", i === this.selectedIndex);
     });
@@ -535,12 +577,19 @@ export class FileMention {
     if (this.mentionRange) {
       this.mentionRange.deleteContents();
 
+      // Create chip with ZWS wrapper for proper cursor behavior
       const chipEl = this.createInlineChip(item, false);
-      this.mentionRange.insertNode(chipEl);
 
+      // Insert ZWS before chip (ensures cursor can be placed before)
+      const zwsBefore = document.createTextNode(FileMention.ZWS);
+      this.mentionRange.insertNode(zwsBefore);
+      zwsBefore.after(chipEl);
+
+      // Insert space after chip (natural text flow)
       const space = document.createTextNode(" ");
       chipEl.after(space);
 
+      // Position cursor after the space
       const after = document.createRange();
       after.setStartAfter(space);
       after.collapse(true);
@@ -553,6 +602,8 @@ export class FileMention {
 
       this.mentionRange = null;
     } else {
+      // Insert ZWS before chip
+      this.insertTextAtCursor(FileMention.ZWS);
       this.insertNodeAtCursor(this.createInlineChip(item, false));
       this.insertTextAtCursor(" ");
     }
@@ -588,7 +639,8 @@ export class FileMention {
     }
 
     if (file instanceof TFolder) {
-      const fileExplorer = this.app.workspace.getLeavesOfType("file-explorer")[0];
+      const fileExplorer =
+        this.app.workspace.getLeavesOfType("file-explorer")[0];
       if (fileExplorer) {
         this.app.workspace.revealLeaf(fileExplorer);
         const explorerView = fileExplorer.view as any;
@@ -648,7 +700,8 @@ export class FileMention {
   }
 
   private getPlainText(): string {
-    return this.inputEl.textContent || "";
+    // Remove ZWS characters that are only used for cursor positioning
+    return (this.inputEl.textContent || "").replace(/\u200B/g, "");
   }
 
   private getPlainTextWithMentionNames(): string {
@@ -662,7 +715,8 @@ export class FileMention {
       chip.replaceWith(document.createTextNode(name));
     }
 
-    return (clone.textContent || "").trim();
+    // Remove ZWS characters that are only used for cursor positioning
+    return (clone.textContent || "").replace(/\u200B/g, "").trim();
   }
 
   /** Clear all mentions (both manual and active file) */
@@ -670,7 +724,9 @@ export class FileMention {
     this.mentions = [];
     this.activeFileMention = null;
 
-    const chips = this.inputEl.querySelectorAll(".opencodian-inline-mention-chip");
+    const chips = this.inputEl.querySelectorAll(
+      ".opencodian-inline-mention-chip",
+    );
     chips.forEach((el) => el.remove());
   }
 
@@ -753,11 +809,13 @@ export class FileMention {
   destroy(): void {
     this.inputEl.removeEventListener("paste", this.handlePasteBound);
     this.inputEl.removeEventListener("drop", this.handleDropBound);
-    this.inputEl.removeEventListener("beforeinput", this.handleBeforeInputBound);
+    this.inputEl.removeEventListener(
+      "beforeinput",
+      this.handleBeforeInputBound,
+    );
 
     if (this.suggestionsEl) {
       this.suggestionsEl.remove();
     }
   }
-
 }
