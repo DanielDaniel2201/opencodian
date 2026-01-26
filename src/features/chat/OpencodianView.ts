@@ -1221,31 +1221,6 @@ export class OpencodianView extends ItemView {
         ? bubbleEl.createDiv({ cls: "opencodian-message-hotzone" })
         : bubbleEl;
 
-    // Render mentions badge above content for user messages
-    if (role === "user" && mentions && mentions.length > 0) {
-      const mentionsEl = hotzoneEl.createDiv({ cls: "message-mentions" });
-      for (const mention of mentions) {
-        const chipEl = mentionsEl.createDiv({
-          cls: "message-mention-chip message-mention-chip-clickable",
-        });
-        chipEl.title = mention.path;
-        chipEl.style.cursor = "pointer";
-
-        // Make chip clickable to open file
-        chipEl.addEventListener("click", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          this.openMentionedFile(mention.path, mention.isFolder);
-        });
-
-        const iconEl = chipEl.createSpan({ cls: "message-mention-icon" });
-        setIcon(iconEl, mention.isFolder ? "folder" : "file-text");
-
-        const nameEl = chipEl.createSpan({ cls: "message-mention-name" });
-        nameEl.textContent = mention.name;
-      }
-    }
-
     const contentEl = hotzoneEl.createDiv({ cls: "message-content" });
     // Assistant messages use a timeline container instead of this contentEl; callers may remove it.
 
@@ -1260,13 +1235,97 @@ export class OpencodianView extends ItemView {
         // Render assistant responses as markdown.
         void this.renderMarkdown(content, contentEl);
       } else {
-        contentEl.textContent = content;
+        // For user messages: render content with inline mention chips
+        if (mentions && mentions.length > 0) {
+          this.renderContentWithInlineMentions(contentEl, content, mentions);
+        } else {
+          contentEl.textContent = content;
+        }
       }
     }
 
     this.scrollToBottom();
 
     return msgEl;
+  }
+
+  /**
+   * Render user message content with inline mention chips.
+   * Replaces mention names in text with clickable chips.
+   */
+  private renderContentWithInlineMentions(
+    containerEl: HTMLElement,
+    content: string,
+    mentions: MentionInfo[],
+  ): void {
+    // Create a map of mention names to their info for quick lookup
+    // Sort by name length descending to match longer names first
+    const sortedMentions = [...mentions].sort(
+      (a, b) => b.name.length - a.name.length,
+    );
+
+    // Build regex pattern to match any mention name
+    const escapedNames = sortedMentions.map((m) =>
+      m.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    );
+
+    if (escapedNames.length === 0) {
+      containerEl.textContent = content;
+      return;
+    }
+
+    const pattern = new RegExp(`(${escapedNames.join("|")})`, "g");
+
+    // Split content by mention names
+    const parts = content.split(pattern);
+
+    // Track which mentions have been used (each only once)
+    const usedMentions = new Set<string>();
+
+    for (const part of parts) {
+      if (!part) continue;
+
+      // Check if this part is a mention name
+      const mention = sortedMentions.find(
+        (m) => m.name === part && !usedMentions.has(m.path),
+      );
+
+      if (mention) {
+        // Mark as used
+        usedMentions.add(mention.path);
+
+        // Create inline chip (same style as input chips)
+        const chipEl = containerEl.createSpan({
+          cls: "opencodian-inline-mention-chip opencodian-message-inline-chip",
+        });
+        chipEl.title = mention.path;
+        chipEl.style.cursor = "pointer";
+
+        // Make chip clickable to open file
+        chipEl.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.openMentionedFile(mention.path, mention.isFolder);
+        });
+
+        const clickArea = chipEl.createSpan({
+          cls: "opencodian-inline-mention-chip-click",
+        });
+
+        const iconEl = clickArea.createSpan({
+          cls: "opencodian-inline-mention-chip-icon",
+        });
+        setIcon(iconEl, mention.isFolder ? "folder" : "file-text");
+
+        const nameEl = clickArea.createSpan({
+          cls: "opencodian-inline-mention-chip-name",
+        });
+        nameEl.textContent = mention.name;
+      } else {
+        // Regular text
+        containerEl.appendChild(document.createTextNode(part));
+      }
+    }
   }
 
   private appendTimelineItem(parentEl: HTMLElement, item: ChatItem): void {

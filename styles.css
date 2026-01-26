@@ -1168,6 +1168,20 @@
   border-color: var(--interactive-accent);
 }
 
+/* Inline chips in message content (read-only, no remove button) */
+.opencodian-message-inline-chip {
+  cursor: pointer;
+}
+
+.opencodian-message-inline-chip:hover {
+  background-color: var(--background-modifier-hover);
+  border-color: var(--interactive-accent);
+}
+
+.opencodian-message-inline-chip:hover .opencodian-inline-mention-chip-icon {
+  color: var(--interactive-accent);
+}
+
 /* ========== MESSAGE MENTIONS BADGE ========== */
 .message-mentions {
   display: flex;
