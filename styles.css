@@ -171,6 +171,67 @@
   line-height: 1.5;
 }
 
+/* Mention scope label (project/global) */
+.opencodian-mention-scope {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-left: auto;
+  padding-left: 8px;
+}
+
+/* Skill mention chips */
+.opencodian-inline-skill-chip {
+  display: inline-flex;
+  align-items: center;
+  background: var(--background-modifier-hover);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 2px 4px;
+  margin: 0 2px;
+  font-size: 0.9em;
+  line-height: 1.2;
+}
+
+.opencodian-inline-skill-chip-click {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.opencodian-inline-skill-chip-icon {
+  display: inline-flex;
+}
+
+.opencodian-inline-skill-chip-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.opencodian-inline-skill-chip-remove {
+  display: inline-flex;
+  margin-left: 4px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.opencodian-inline-skill-chip-remove:hover {
+  opacity: 1;
+}
+
+.opencodian-inline-skill-chip-remove svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Static skill chip in message bubble (not clickable, no remove button) */
+.opencodian-skill-chip-static {
+  cursor: default;
+}
+
+.opencodian-skill-chip-static .opencodian-inline-skill-chip-remove {
+  display: none;
+}
+
 /* Markdown Content Styling */
 .message-content {
   word-wrap: break-word;
@@ -1096,6 +1157,13 @@
   text-overflow: ellipsis;
 }
 
+.opencodian-mention-scope {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-left: auto;
+  padding-left: 8px;
+}
+
 .opencodian-mention-empty {
   padding: 12px;
   text-align: center;
@@ -1398,4 +1466,68 @@
 .dropdown-item-badge.free {
   background-color: rgba(var(--color-green-rgb), 0.15);
   color: var(--text-success);
+}
+
+/* Skill Mention Chips */
+.opencodian-inline-skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background-color: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  color: var(--text-normal);
+  vertical-align: baseline;
+  user-select: none;
+  margin: 0 2px;
+}
+
+.opencodian-inline-skill-chip-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+}
+.opencodian-inline-skill-chip-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.opencodian-inline-skill-chip-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
+}
+
+.opencodian-inline-skill-chip-click {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: default;
+}
+
+.opencodian-inline-skill-chip-remove {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--text-muted);
+  margin-left: 2px;
+  opacity: 0.7;
+}
+
+.opencodian-inline-skill-chip-remove:hover {
+  opacity: 1;
+  color: var(--text-error);
+}
+.opencodian-inline-skill-chip-remove svg {
+  width: 10px;
+  height: 10px;
+}
+
+.opencodian-skill-chip-static {
+  cursor: default;
+  background-color: rgba(var(--interactive-accent-rgb), 0.05);
+  border-color: var(--background-modifier-border-hover);
 }

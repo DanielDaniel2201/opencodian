@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Opencodian View - Main chat interface
  */
 
@@ -21,7 +21,9 @@ import type {
   Conversation,
 } from "../../core/types";
 import type { MentionContext } from "../../core/agent/OpenCodeService";
+import type { SkillInfo } from "../../core/types";
 import { FileMention } from "./FileMention";
+import { SkillMention } from "./SkillMention";
 
 /** Track active tool blocks during streaming */
 interface ToolBlock {
@@ -45,6 +47,7 @@ export class OpencodianView extends ItemView {
   private currentThinkingBlock: ToolBlock | null = null;
   private welcomeMessageShown: boolean = false;
   private fileMention: FileMention | null = null;
+  private skillMention: SkillMention | null = null;
   private currentConversation: Conversation | null = null;
 
   // Model selector state
@@ -182,9 +185,14 @@ export class OpencodianView extends ItemView {
     });
     setIcon(this.sendButtonEl, "arrow-up");
 
-    // Initialize file mention system BEFORE keydown listener
-    // so we can check its state
+    // Initialize mention systems BEFORE keydown listener
+    // so we can check their state
     this.fileMention = new FileMention(
+      this.plugin.app,
+      this.inputEl,
+      inputWrapper,
+    );
+    this.skillMention = new SkillMention(
       this.plugin.app,
       this.inputEl,
       inputWrapper,
@@ -197,6 +205,7 @@ export class OpencodianView extends ItemView {
 
     this.inputEl.addEventListener("keydown", (e) => {
       if (this.fileMention?.isSuggestionsOpen()) return;
+      if (this.skillMention?.isSuggestionsOpen()) return;
 
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
@@ -214,6 +223,11 @@ export class OpencodianView extends ItemView {
     if (this.fileMention) {
       this.fileMention.destroy();
       this.fileMention = null;
+    }
+
+    if (this.skillMention) {
+      this.skillMention.destroy();
+      this.skillMention = null;
     }
   }
 
@@ -412,6 +426,7 @@ export class OpencodianView extends ItemView {
           msg.content ?? "",
           undefined,
           msg.mentions,
+          msg.skills,
         );
         continue;
       }
@@ -470,21 +485,61 @@ export class OpencodianView extends ItemView {
   }
 
   private async handleSend(): Promise<void> {
-    const input = this.fileMention
-      ? this.fileMention.getTextAndMentionsAndClear()
-      : { text: this.inputEl.textContent || "", mentions: [] };
+    // Extract data from both mention helpers BEFORE clearing anything.
+    const fileMentions = this.fileMention ? this.fileMention.getMentions() : [];
+    const fileText = this.fileMention
+      ? this.fileMention.getText()
+      : this.inputEl.textContent || "";
 
-    await this.sendUserMessage(input.text, input.mentions);
+    const skillSkills = this.skillMention ? this.skillMention.getSkills() : [];
+    const skillText = this.skillMention
+      ? this.skillMention.getText()
+      : this.inputEl.textContent || "";
+
+    // Now clear everything
+    if (this.fileMention) this.fileMention.clear();
+    if (this.skillMention) this.skillMention.clear();
+    if (!this.fileMention && !this.skillMention) {
+      this.inputEl.textContent = "";
+    }
+
+    const text = this.joinMentionTexts(fileText, skillText);
+
+    const skillsInfo: SkillInfo[] = skillSkills.map((s) => ({
+      name: s.name,
+      path: s.path,
+      scope: s.scope,
+    }));
+
+    await this.sendUserMessage(text, fileMentions, skillsInfo);
+  }
+
+  private joinMentionTexts(left: string, right: string): string {
+    const a = left.trim();
+    const b = right.trim();
+
+    if (!a) return b;
+    if (!b) return a;
+    if (a === b) return a;
+
+    // When mention extractors disagree (due to ZWS/chip handling),
+    // prefer the longer one so chip names aren't lost.
+    return a.length >= b.length ? a : b;
   }
 
   private async sendUserMessage(
     rawText: string,
     mentionItems?: Array<{ path: string; name: string; isFolder: boolean }>,
+    skills?: SkillInfo[],
   ): Promise<void> {
     const text = rawText.trim();
     if (!text) return;
 
-    const mentionItemsFinal =
+    const mentionItemsFinal: Array<{
+      path: string;
+      name: string;
+      isFolder: boolean;
+    }> =
       mentionItems ??
       (this.fileMention ? this.fileMention.getMentionsAndClear() : []);
 
@@ -496,6 +551,8 @@ export class OpencodianView extends ItemView {
       name: m.name,
       isFolder: m.isFolder,
     }));
+
+    const skillsFinal = skills && skills.length > 0 ? skills : undefined;
 
     // Build rich MentionContext with folder children
     const mentionContexts: MentionContext[] = mentionItemsFinal.map((m) => {
@@ -532,14 +589,16 @@ export class OpencodianView extends ItemView {
     this.currentConversation = conv;
     const messageId = this.createMessageId();
 
-    // Add user message to UI (with mentions badge)
+    // Add user message to UI (with mentions/skills)
     this.addMessage(
       messageId,
       "user",
       text,
       undefined,
       mentions.length > 0 ? mentions : undefined,
+      skillsFinal,
     );
+
     if (conv) {
       conv.messages.push({
         id: messageId,
@@ -548,6 +607,7 @@ export class OpencodianView extends ItemView {
         content: text,
         timestamp: Date.now(),
         mentions: mentions.length > 0 ? mentions : undefined,
+        skills: skillsFinal,
       });
 
       // Auto-title: If this is the first user message and title is default/empty, update it
@@ -627,6 +687,7 @@ export class OpencodianView extends ItemView {
           model: this.plugin.settings.model,
           mentionContexts:
             mentionContexts.length > 0 ? mentionContexts : undefined,
+          allowedTools: skillsFinal?.map((s) => s.name),
         },
       )) {
         if (chunk.type === "text") {
@@ -1205,6 +1266,7 @@ export class OpencodianView extends ItemView {
     content: string,
     _toolCalls?: unknown,
     mentions?: MentionInfo[],
+    skills?: SkillInfo[],
   ): HTMLElement {
     const msgEl = this.messagesEl.createDiv({
       cls: `message message-${role}`,
@@ -1235,9 +1297,17 @@ export class OpencodianView extends ItemView {
         // Render assistant responses as markdown.
         void this.renderMarkdown(content, contentEl);
       } else {
-        // For user messages: render content with inline mention chips
-        if (mentions && mentions.length > 0) {
-          this.renderContentWithInlineMentions(contentEl, content, mentions);
+        // For user messages: render content with inline mention/skill chips
+        if (
+          (mentions && mentions.length > 0) ||
+          (skills && skills.length > 0)
+        ) {
+          this.renderContentWithInlineChips(
+            contentEl,
+            content,
+            mentions,
+            skills,
+          );
         } else {
           contentEl.textContent = content;
         }
@@ -1247,6 +1317,151 @@ export class OpencodianView extends ItemView {
     this.scrollToBottom();
 
     return msgEl;
+  }
+
+  /**
+   * Render user message content with inline mention and skill chips.
+   * Replaces mention/skill names in text with chips.
+   */
+  private renderContentWithInlineChips(
+    containerEl: HTMLElement,
+    content: string,
+    mentions?: MentionInfo[],
+    skills?: SkillInfo[],
+  ): void {
+    // Build combined list of tokens to replace
+    type TokenInfo =
+      | { type: "file"; name: string; data: MentionInfo }
+      | { type: "skill"; name: string; data: SkillInfo };
+
+    const tokens: TokenInfo[] = [];
+
+    if (mentions) {
+      for (const m of mentions) {
+        if (!m.name.trim()) continue;
+        tokens.push({ type: "file", name: m.name, data: m });
+      }
+    }
+
+    if (skills) {
+      for (const s of skills) {
+        if (!s.name.trim()) continue;
+        tokens.push({ type: "skill", name: s.name, data: s });
+      }
+    }
+
+    if (tokens.length === 0) {
+      containerEl.textContent = content;
+      return;
+    }
+
+    // Sort by name length descending to match longer names first
+    tokens.sort((a, b) => b.name.length - a.name.length);
+
+    const escapeRegExp = (value: string): string =>
+      value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    // Build regex pattern to match any token name
+    const escapedNames = tokens.map((t) => escapeRegExp(t.name));
+
+    const pattern = new RegExp(`(${escapedNames.join("|")})`, "g");
+
+    // Split content by token names
+    const parts = content.split(pattern);
+
+    // Track which tokens have been used (each only once, by unique key)
+    const usedTokens = new Set<string>();
+
+    const getTokenKey = (t: TokenInfo): string => {
+      if (t.type === "file") return `file:${t.data.path}`;
+      return `skill:${t.data.path}`;
+    };
+
+    const normalize = (value: string): string =>
+      value.replace(/\s+/g, " ").trim();
+    const normalizedContent = normalize(content);
+
+    for (const part of parts) {
+      if (!part) continue;
+
+      // Check if this part matches a token name
+      const token = tokens.find((t) => {
+        if (usedTokens.has(getTokenKey(t))) return false;
+        if (t.name === part) return true;
+
+        // If the stored message text normalizes whitespace differently,
+        // still try to match tokens in a resilient way.
+        const normalizedName = normalize(t.name);
+        if (!normalizedName) return false;
+        if (normalize(part) === normalizedName) return true;
+        if (
+          normalizedContent.includes(normalizedName) &&
+          part.includes(normalizedName)
+        ) {
+          return true;
+        }
+
+        return false;
+      });
+
+      if (token) {
+        usedTokens.add(getTokenKey(token));
+
+        if (token.type === "file") {
+          // File mention chip (clickable)
+          const mention = token.data;
+          const chipEl = containerEl.createSpan({
+            cls: "opencodian-inline-mention-chip opencodian-message-inline-chip",
+          });
+          chipEl.title = mention.path;
+          chipEl.style.cursor = "pointer";
+
+          chipEl.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.openMentionedFile(mention.path, mention.isFolder);
+          });
+
+          const clickArea = chipEl.createSpan({
+            cls: "opencodian-inline-mention-chip-click",
+          });
+
+          const iconEl = clickArea.createSpan({
+            cls: "opencodian-inline-mention-chip-icon",
+          });
+          setIcon(iconEl, mention.isFolder ? "folder" : "file-text");
+
+          const nameEl = clickArea.createSpan({
+            cls: "opencodian-inline-mention-chip-name",
+          });
+          nameEl.textContent = mention.name;
+        } else {
+          // Skill chip (not clickable)
+          const skill = token.data;
+          const chipEl = containerEl.createSpan({
+            cls: "opencodian-inline-skill-chip opencodian-message-inline-chip opencodian-skill-chip-static",
+          });
+          chipEl.title = skill.name;
+
+          const clickArea = chipEl.createSpan({
+            cls: "opencodian-inline-skill-chip-click",
+          });
+
+          const iconEl = clickArea.createSpan({
+            cls: "opencodian-inline-skill-chip-icon",
+          });
+          setIcon(iconEl, "wand");
+
+          const nameEl = clickArea.createSpan({
+            cls: "opencodian-inline-skill-chip-name",
+          });
+          nameEl.textContent = skill.name;
+        }
+      } else {
+        // Regular text
+        containerEl.appendChild(document.createTextNode(part));
+      }
+    }
   }
 
   /**
@@ -1391,13 +1606,13 @@ export class OpencodianView extends ItemView {
       if (value == null) return value;
       if (typeof value === "string") {
         if (value.length <= maxString) return value;
-        return value.slice(0, maxString) + "…";
+        return value.slice(0, maxString) + "...";
       }
       if (typeof value === "number" || typeof value === "boolean") return value;
       if (Array.isArray(value)) {
         const sliced = value.slice(0, maxArray);
         const mapped = sliced.map((v) => sanitize(v, depth + 1));
-        if (value.length > maxArray) mapped.push("…");
+        if (value.length > maxArray) mapped.push("...");
         return mapped;
       }
       if (typeof value === "object") {

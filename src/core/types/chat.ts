@@ -30,6 +30,14 @@ export interface ChatMessage {
    * Stored for display purposes - shown as badges above the message.
    */
   mentions?: MentionInfo[];
+  /** Mentioned skills via `/` (user messages only). */
+  skills?: SkillInfo[];
+}
+
+export interface SkillInfo {
+  name: string;
+  path: string;
+  scope: "project" | "global";
 }
 
 
