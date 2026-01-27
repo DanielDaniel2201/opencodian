@@ -26,6 +26,10 @@ Thumbs.db
 *.log
 npm-debug.log*
 
+# Local state
+.claude/
+!.claude/skills/opencode-dev-skill/
+
 # Documentation & Scripts (Local only)
 DEVELOPMENT.md
 QUICKSTART.md

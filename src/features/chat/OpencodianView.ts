@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Opencodian View - Main chat interface
  */
 
@@ -23,7 +23,7 @@ import type {
 import type { MentionContext } from "../../core/agent/OpenCodeService";
 import type { SkillInfo } from "../../core/types";
 import { FileMention } from "./FileMention";
-import { SkillMention } from "./SkillMention";
+
 
 /** Track active tool blocks during streaming */
 interface ToolBlock {
@@ -47,8 +47,8 @@ export class OpencodianView extends ItemView {
   private currentThinkingBlock: ToolBlock | null = null;
   private welcomeMessageShown: boolean = false;
   private fileMention: FileMention | null = null;
-  private skillMention: SkillMention | null = null;
   private currentConversation: Conversation | null = null;
+
 
   // Model selector state
   private modelSelectorEl: HTMLElement;
@@ -166,9 +166,11 @@ export class OpencodianView extends ItemView {
         contenteditable: "true",
         role: "textbox",
         "aria-multiline": "true",
-        "data-placeholder": "How can I help you today?",
+        "data-placeholder": "@ files, folders, skills",
+        "data-empty": "true",
       },
     });
+
 
     // Embedded Toolbar (Model Selector + Send Button)
     const toolbarEl = inputWrapper.createDiv({
@@ -192,11 +194,7 @@ export class OpencodianView extends ItemView {
       this.inputEl,
       inputWrapper,
     );
-    this.skillMention = new SkillMention(
-      this.plugin.app,
-      this.inputEl,
-      inputWrapper,
-    );
+
 
     // Event listeners
     this.sendButtonEl.addEventListener("click", () =>
@@ -205,13 +203,19 @@ export class OpencodianView extends ItemView {
 
     this.inputEl.addEventListener("keydown", (e) => {
       if (this.fileMention?.isSuggestionsOpen()) return;
-      if (this.skillMention?.isSuggestionsOpen()) return;
 
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         this.handleSendButtonClick();
       }
     });
+
+    this.inputEl.addEventListener("input", () => {
+      if (!this.inputEl) return;
+      const text = (this.inputEl.textContent || "").replace(/\u200B/g, "");
+      this.inputEl.setAttribute("data-empty", text.length > 0 ? "false" : "true");
+    });
+
 
     // Initial render
     this.renderHistoryList();
@@ -224,12 +228,8 @@ export class OpencodianView extends ItemView {
       this.fileMention.destroy();
       this.fileMention = null;
     }
-
-    if (this.skillMention) {
-      this.skillMention.destroy();
-      this.skillMention = null;
-    }
   }
+
 
   // ========== HISTORY DROPDOWN METHODS ==========
 
@@ -485,47 +485,28 @@ export class OpencodianView extends ItemView {
   }
 
   private async handleSend(): Promise<void> {
-    // Extract data from both mention helpers BEFORE clearing anything.
     const fileMentions = this.fileMention ? this.fileMention.getMentions() : [];
-    const fileText = this.fileMention
+    const text = this.fileMention
       ? this.fileMention.getText()
       : this.inputEl.textContent || "";
 
-    const skillSkills = this.skillMention ? this.skillMention.getSkills() : [];
-    const skillText = this.skillMention
-      ? this.skillMention.getText()
-      : this.inputEl.textContent || "";
+    const skills = this.fileMention ? this.fileMention.getSkills() : [];
 
-    // Now clear everything
     if (this.fileMention) this.fileMention.clear();
-    if (this.skillMention) this.skillMention.clear();
-    if (!this.fileMention && !this.skillMention) {
+    if (!this.fileMention) {
       this.inputEl.textContent = "";
     }
+    this.inputEl.setAttribute("data-empty", "true");
 
-    const text = this.joinMentionTexts(fileText, skillText);
-
-    const skillsInfo: SkillInfo[] = skillSkills.map((s) => ({
-      name: s.name,
-      path: s.path,
-      scope: s.scope,
+    const skillsInfo: SkillInfo[] = skills.map((skill) => ({
+      name: skill.name,
+      path: skill.path,
+      scope: skill.scope,
     }));
 
     await this.sendUserMessage(text, fileMentions, skillsInfo);
   }
 
-  private joinMentionTexts(left: string, right: string): string {
-    const a = left.trim();
-    const b = right.trim();
-
-    if (!a) return b;
-    if (!b) return a;
-    if (a === b) return a;
-
-    // When mention extractors disagree (due to ZWS/chip handling),
-    // prefer the longer one so chip names aren't lost.
-    return a.length >= b.length ? a : b;
-  }
 
   private async sendUserMessage(
     rawText: string,
@@ -544,6 +525,8 @@ export class OpencodianView extends ItemView {
       (this.fileMention ? this.fileMention.getMentionsAndClear() : []);
 
     this.inputEl.textContent = "";
+    this.inputEl.setAttribute("data-empty", "true");
+
 
     // Convert to MentionInfo for storage
     const mentions: MentionInfo[] = mentionItemsFinal.map((m) => ({
@@ -936,6 +919,7 @@ export class OpencodianView extends ItemView {
       content: text,
       timestamp: Date.now(),
       mentions: original.mentions,
+      skills: original.skills,
     };
 
     conv.messages = [...messages, nextUser];
@@ -1772,7 +1756,9 @@ export class OpencodianView extends ItemView {
       await this.loadConversation(false);
       this.messagesEl.scrollTo({ top: currentScroll, behavior: "auto" });
       this.suppressAutoScroll = false;
+      this.inputEl.setAttribute("data-empty", "true");
     };
+
 
     const send = async (): Promise<void> => {
       const text = inputEl.value.trim();
@@ -1816,8 +1802,12 @@ export class OpencodianView extends ItemView {
 
   private showWelcomeMessage(): void {
     const welcomeEl = this.messagesEl.createDiv({ cls: "opencodian-welcome" });
-    welcomeEl.textContent = "Opencodian";
+    welcomeEl.createDiv({
+      text: "Opencodian",
+      cls: "opencodian-welcome-line",
+    });
   }
+
 
   private clearWelcomeMessage(): void {
     const welcomeEl = this.messagesEl.querySelector(".opencodian-welcome");

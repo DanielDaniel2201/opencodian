@@ -1,11 +1,11 @@
 /**
- * SkillMention - / skill mention system
+  * SkillMention - legacy / skill mention system
  *
  * Modeled after FileMention. Targets a `contenteditable` input element, inserting
  * inline, removable chips into the text flow.
  */
 
-import { setIcon, type App } from "obsidian";
+import type { App } from "obsidian";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -27,12 +27,8 @@ export class SkillMention {
   private handleBeforeInputBound: (e: InputEvent) => void;
 
   private items: SkillItem[] = [];
-  private filteredItems: SkillItem[] = [];
-  private selectedIndex: number = 0;
-  private mentionRange: Range | null = null;
-  private isOpen: boolean = false;
 
-  private mentions: SkillItem[] = [];
+  private skipNativePaste: boolean = false;
 
   /** Zero Width Space - used to ensure cursor can be placed before/after chips */
   private static readonly ZWS = "\u200B";
@@ -62,6 +58,7 @@ export class SkillMention {
     this.createSuggestionsEl();
   }
 
+
   private createSuggestionsEl(): void {
     this.suggestionsEl = document.createElement("div");
     this.suggestionsEl.className = "opencodian-mention-suggestions";
@@ -69,20 +66,40 @@ export class SkillMention {
     this.containerEl.appendChild(this.suggestionsEl);
   }
 
+  private show(): void {
+    if (!this.suggestionsEl) return;
+    this.suggestionsEl.style.display = "block";
+  }
+
   private handlePaste(e: ClipboardEvent): void {
+    if (e.defaultPrevented) return;
+
+    this.skipNativePaste = true;
     e.preventDefault();
+    e.stopImmediatePropagation();
     const text = e.clipboardData?.getData("text/plain") ?? "";
     this.insertPlainTextAtCursor(text);
   }
 
   private handleDrop(e: DragEvent): void {
+    if (e.defaultPrevented) return;
+
+    this.skipNativePaste = true;
     e.preventDefault();
+    e.stopImmediatePropagation();
     const text = e.dataTransfer?.getData("text/plain") ?? "";
     this.insertPlainTextAtCursor(text);
   }
 
   private handleBeforeInput(e: InputEvent): void {
+    if (e.defaultPrevented) return;
     if (e.inputType !== "insertFromPaste" && e.inputType !== "insertFromDrop") {
+      return;
+    }
+
+    if (this.skipNativePaste) {
+      this.skipNativePaste = false;
+      e.preventDefault();
       return;
     }
 
@@ -163,119 +180,17 @@ export class SkillMention {
   }
 
   /** Find the /query trigger right before cursor */
-  private findMentionTrigger(beforeCursor: string): { query: string } | null {
-    let slashIndex = -1;
-
-    for (let i = beforeCursor.length - 1; i >= 0; i--) {
-      const ch = beforeCursor[i];
-      if (ch === "/") {
-        if (i === 0 || /\s/.test(beforeCursor[i - 1])) {
-          slashIndex = i;
-          break;
-        }
-      }
-
-      if (/\s/.test(ch) && i !== beforeCursor.length - 1) {
-        break;
-      }
-    }
-
-    if (slashIndex === -1) return null;
-
-    const query = beforeCursor.slice(slashIndex + 1);
-    if (query.includes("\n")) return null;
-
-    this.mentionRange = this.computeMentionRange(
-      slashIndex,
-      beforeCursor.length,
-    );
-    if (!this.mentionRange) return null;
-
-    return { query };
+  // Legacy trigger is disabled; unified in FileMention.
+  private handleKeyDown(_e: KeyboardEvent): void {
+    return;
   }
 
-  private computeMentionRange(
-    slashIndex: number,
-    cursorIndex: number,
-  ): Range | null {
-    const range = this.getSelectionRangeInInput();
-    if (!range) return null;
-
-    const full = range.cloneRange();
-    full.collapse(true);
-    full.setStart(this.inputEl, 0);
-
-    const text = full.toString();
-    const skip = Math.max(text.length - cursorIndex, 0);
-
-    const startOffsetInText = text.length - cursorIndex + slashIndex;
-    const endOffsetInText = text.length - skip;
-
-    return this.rangeFromTextOffsets(startOffsetInText, endOffsetInText);
-  }
-
-  private rangeFromTextOffsets(start: number, end: number): Range | null {
-    const walker = document.createTreeWalker(
-      this.inputEl,
-      NodeFilter.SHOW_TEXT,
-      null,
-    );
-
-    let node = walker.nextNode() as Text | null;
-    let offset = 0;
-
-    const makePoint = (
-      absolute: number,
-    ): { node: Text; offset: number } | null => {
-      let current = node;
-      let currentOffset = offset;
-
-      while (current) {
-        const len = current.data.length;
-        if (absolute <= currentOffset + len) {
-          return {
-            node: current,
-            offset: Math.max(0, absolute - currentOffset),
-          };
-        }
-        currentOffset += len;
-        current = walker.nextNode() as Text | null;
-      }
-      return null;
-    };
-
-    walker.currentNode = this.inputEl;
-    node = walker.nextNode() as Text | null;
-    offset = 0;
-
-    const startPoint = makePoint(start);
-
-    walker.currentNode = this.inputEl;
-    node = walker.nextNode() as Text | null;
-    offset = 0;
-
-    const endPoint = makePoint(end);
-    if (!startPoint || !endPoint) return null;
-
-    const r = document.createRange();
-    r.setStart(startPoint.node, startPoint.offset);
-    r.setEnd(endPoint.node, endPoint.offset);
-    return r;
+  private handleBlur(): void {
+    this.hide();
   }
 
   private handleInput(): void {
     this.ensureChipZWS();
-
-    const beforeCursor = this.getTextBeforeCursor();
-    const match = this.findMentionTrigger(beforeCursor);
-
-    if (match) {
-      void this.loadItems();
-      this.filterItems(match.query);
-      this.show();
-      return;
-    }
-
     this.hide();
   }
 
@@ -299,326 +214,9 @@ export class SkillMention {
     }
   }
 
-  private filterItems(query: string): void {
-    const lowerQuery = query.toLowerCase();
-    const mentioned = new Set(this.mentions.map((m) => m.path));
-
-    let filtered = this.items.filter((item) => !mentioned.has(item.path));
-
-    if (query) {
-      filtered = filtered.filter((item) => {
-        const lhs = item.name.toLowerCase();
-        const rhs = item.description.toLowerCase();
-        return lhs.includes(lowerQuery) || rhs.includes(lowerQuery);
-      });
-    }
-
-    this.filteredItems = filtered.slice(0, 15);
-    this.selectedIndex = 0;
-    this.renderSuggestions();
-  }
-
-  private renderSuggestions(): void {
-    if (!this.suggestionsEl) return;
-    this.suggestionsEl.innerHTML = "";
-
-    if (this.filteredItems.length === 0) {
-      const emptyEl = document.createElement("div");
-      emptyEl.className = "opencodian-mention-empty";
-      emptyEl.textContent = "No skills found";
-      this.suggestionsEl.appendChild(emptyEl);
-      return;
-    }
-
-    for (let i = 0; i < this.filteredItems.length; i++) {
-      const item = this.filteredItems[i];
-      const itemEl = document.createElement("div");
-      itemEl.className = "opencodian-mention-item";
-      if (i === this.selectedIndex) {
-        itemEl.classList.add("selected");
-      }
-
-      const iconEl = document.createElement("span");
-      iconEl.className = "opencodian-mention-icon";
-      setIcon(iconEl, "wand");
-      itemEl.appendChild(iconEl);
-
-      const nameEl = document.createElement("span");
-      nameEl.className = "opencodian-mention-path";
-      nameEl.textContent = item.name;
-      itemEl.appendChild(nameEl);
-
-      const scopeEl = document.createElement("span");
-      scopeEl.className = "opencodian-mention-scope";
-      scopeEl.textContent = item.scope;
-      itemEl.appendChild(scopeEl);
-
-      itemEl.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        this.selectItem(item);
-      });
-
-      itemEl.addEventListener("mouseenter", () => {
-        this.selectedIndex = i;
-        this.updateSelection();
-      });
-
-      this.suggestionsEl.appendChild(itemEl);
-    }
-  }
-
-  private updateSelection(): void {
-    if (!this.suggestionsEl) return;
-    const items = this.suggestionsEl.querySelectorAll(
-      ".opencodian-mention-item",
-    );
-    items.forEach((el, i) => {
-      el.classList.toggle("selected", i === this.selectedIndex);
-    });
-
-    const selectedEl = items[this.selectedIndex] as HTMLElement | undefined;
-    if (selectedEl) {
-      selectedEl.scrollIntoView({ block: "nearest" });
-    }
-  }
-
-  private handleKeyDown(e: KeyboardEvent): void {
-    if (!this.isOpen) return;
-
-    const len = this.filteredItems.length;
-    if (len === 0) return;
-
-    switch (e.key) {
-      case "ArrowDown":
-        e.preventDefault();
-        e.stopPropagation();
-        this.selectedIndex = (this.selectedIndex + 1) % len;
-        this.updateSelection();
-        break;
-
-      case "ArrowUp":
-        e.preventDefault();
-        e.stopPropagation();
-        this.selectedIndex = (this.selectedIndex - 1 + len) % len;
-        this.updateSelection();
-        break;
-
-      case "Enter":
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        this.selectItem(this.filteredItems[this.selectedIndex]);
-        break;
-
-      case "Escape":
-        e.preventDefault();
-        e.stopPropagation();
-        this.hide();
-        break;
-
-      case "Tab":
-        e.preventDefault();
-        e.stopPropagation();
-        this.selectItem(this.filteredItems[this.selectedIndex]);
-        break;
-    }
-  }
-
-  private handleBlur(): void {
-    setTimeout(() => this.hide(), 150);
-  }
-
-  private createInlineChip(item: SkillItem): HTMLElement {
-    const chipEl = document.createElement("span");
-    chipEl.className = "opencodian-inline-skill-chip";
-
-    chipEl.setAttribute("contenteditable", "false");
-    chipEl.setAttribute("data-skill-name", item.name);
-    chipEl.setAttribute("data-skill-path", item.path);
-    chipEl.setAttribute("data-skill-scope", item.scope);
-    chipEl.title = item.description || item.name;
-
-    const clickArea = document.createElement("span");
-    clickArea.className = "opencodian-inline-skill-chip-click";
-
-    const iconEl = document.createElement("span");
-    iconEl.className = "opencodian-inline-skill-chip-icon";
-    setIcon(iconEl, "wand");
-    clickArea.appendChild(iconEl);
-
-    const nameEl = document.createElement("span");
-    nameEl.className = "opencodian-inline-skill-chip-name";
-    nameEl.textContent = item.name;
-    clickArea.appendChild(nameEl);
-
-    chipEl.appendChild(clickArea);
-
-    const removeEl = document.createElement("span");
-    removeEl.className = "opencodian-inline-skill-chip-remove";
-    setIcon(removeEl, "x");
-    removeEl.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.removeMention(item);
-      chipEl.remove();
-    });
-    chipEl.appendChild(removeEl);
-
-    return chipEl;
-  }
-
-  private selectItem(item: SkillItem): void {
-    if (!this.mentions.find((m) => m.path === item.path)) {
-      this.mentions.push(item);
-    }
-
-    if (this.mentionRange) {
-      this.mentionRange.deleteContents();
-
-      const chipEl = this.createInlineChip(item);
-
-      const zwsBefore = document.createTextNode(SkillMention.ZWS);
-      this.mentionRange.insertNode(zwsBefore);
-      zwsBefore.after(chipEl);
-
-      const space = document.createTextNode(" ");
-      chipEl.after(space);
-
-      const after = document.createRange();
-      after.setStartAfter(space);
-      after.collapse(true);
-
-      const sel = window.getSelection();
-      if (sel) {
-        sel.removeAllRanges();
-        sel.addRange(after);
-      }
-
-      this.mentionRange = null;
-    } else {
-      this.insertTextAtCursor(SkillMention.ZWS);
-      this.insertNodeAtCursor(this.createInlineChip(item));
-      this.insertTextAtCursor(" ");
-    }
-
-    this.hide();
-    this.inputEl.focus();
-  }
-
-  private insertNodeAtCursor(node: Node): void {
-    const range = this.getSelectionRangeInInput();
-    if (!range) {
-      this.inputEl.appendChild(node);
-      return;
-    }
-
-    range.insertNode(node);
-
-    const after = document.createRange();
-    after.setStartAfter(node);
-    after.collapse(true);
-
-    const sel = window.getSelection();
-    if (!sel) return;
-
-    sel.removeAllRanges();
-    sel.addRange(after);
-  }
-
-  private insertTextAtCursor(text: string): void {
-    const node = document.createTextNode(text);
-    this.insertNodeAtCursor(node);
-  }
-
-  private show(): void {
-    if (!this.suggestionsEl) return;
-    this.isOpen = true;
-    this.suggestionsEl.style.display = "block";
-  }
-
   private hide(): void {
     if (!this.suggestionsEl) return;
-    this.isOpen = false;
     this.suggestionsEl.style.display = "none";
-    this.mentionRange = null;
-  }
-
-  isSuggestionsOpen(): boolean {
-    return this.isOpen;
-  }
-
-  getTextAndSkillsAndClear(): { text: string; skills: SkillItem[] } {
-    const skills = this.getMentionsFromDom();
-    const text = this.getPlainTextWithSkillNames();
-    this.clearMentions();
-    this.clearInput();
-    return { text, skills };
-  }
-
-  getSkills(): SkillItem[] {
-    return this.getMentionsFromDom();
-  }
-
-  getText(): string {
-    return this.getPlainTextWithSkillNames();
-  }
-
-  clear(): void {
-    this.clearMentions();
-    this.clearInput();
-  }
-
-  getSkillsAndClear(): SkillItem[] {
-    const result = this.getMentionsFromDom();
-    this.clearMentions();
-    return result;
-  }
-
-  private clearInput(): void {
-    this.inputEl.innerHTML = "";
-  }
-
-  clearMentions(): void {
-    this.mentions = [];
-
-    const chips = this.inputEl.querySelectorAll(
-      ".opencodian-inline-skill-chip",
-    );
-    chips.forEach((el) => el.remove());
-  }
-
-  private removeMention(item: SkillItem): void {
-    this.mentions = this.mentions.filter((m) => m.path !== item.path);
-  }
-
-  private getMentionsFromDom(): SkillItem[] {
-    const els = this.inputEl.querySelectorAll(
-      ".opencodian-inline-skill-chip[data-skill-path]",
-    );
-
-    const out: SkillItem[] = [];
-    for (const el of Array.from(els)) {
-      const skillPath = el.getAttribute("data-skill-path") || "";
-      const name = el.getAttribute("data-skill-name") || "";
-      const scope =
-        el.getAttribute("data-skill-scope") === "global" ? "global" : "project";
-      if (!skillPath || !name) continue;
-      out.push({ name, description: "", path: skillPath, scope });
-    }
-    return out;
-  }
-
-  private getPlainTextWithSkillNames(): string {
-    const clone = this.inputEl.cloneNode(true) as HTMLElement;
-
-    const chips = clone.querySelectorAll(
-      ".opencodian-inline-skill-chip[data-skill-name]",
-    );
-    for (const chip of Array.from(chips)) {
-      const name = chip.getAttribute("data-skill-name") || "";
-      chip.replaceWith(document.createTextNode(name));
-    }
-
-    return (clone.textContent || "").replace(/\u200B/g, "").trim();
   }
 
   destroy(): void {

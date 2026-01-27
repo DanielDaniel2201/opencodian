@@ -1,11 +1,15 @@
 /**
- * FileMention - @ file/folder mention system
+ * FileMention - unified @ mention system for files and skills
  *
  * IMPORTANT: This implementation targets a `contenteditable` input element.
  * It inserts inline, clickable chips directly into the text flow.
  */
 
 import { TFolder, TFile, setIcon, type App } from "obsidian";
+import * as fs from "fs";
+import * as path from "path";
+
+import type { SkillItem } from "./SkillMention";
 
 /** Represents a mentionable file or folder */
 export interface MentionItem {
@@ -13,6 +17,10 @@ export interface MentionItem {
   name: string;
   isFolder: boolean;
 }
+
+type UnifiedMentionItem =
+  | { type: "file"; item: MentionItem }
+  | { type: "skill"; item: SkillItem };
 
 export class FileMention {
   private app: App;
@@ -24,14 +32,20 @@ export class FileMention {
   private handleDropBound: (e: DragEvent) => void;
   private handleBeforeInputBound: (e: InputEvent) => void;
 
-  private items: MentionItem[] = [];
-  private filteredItems: MentionItem[] = [];
+  private fileItems: MentionItem[] = [];
+  private skillItems: SkillItem[] = [];
+  private filteredItems: UnifiedMentionItem[] = [];
   private selectedIndex: number = 0;
   private mentionRange: Range | null = null;
   private isOpen: boolean = false;
+  private mentionQueryId: number = 0;
 
   private mentions: MentionItem[] = [];
+  private skillMentions: SkillItem[] = [];
   private activeFileMention: MentionItem | null = null;
+  private skipNativePaste: boolean = false;
+
+
 
   constructor(app: App, inputEl: HTMLElement, containerEl: HTMLElement) {
     this.app = app;
@@ -46,7 +60,8 @@ export class FileMention {
   }
 
   private init(): void {
-    this.loadItems();
+    void this.loadItems();
+
 
     this.inputEl.addEventListener("input", this.handleInput.bind(this));
     this.inputEl.addEventListener("keydown", this.handleKeyDown.bind(this));
@@ -58,8 +73,8 @@ export class FileMention {
     this.createSuggestionsEl();
   }
 
-  /** Load files and folders from vault - all Obsidian-visible files */
-  private loadItems(): void {
+  /** Load files, folders, and skills */
+  private async loadItems(): Promise<void> {
     const items: MentionItem[] = [];
     const seenFolders = new Set<string>();
 
@@ -94,7 +109,8 @@ export class FileMention {
       return a.path.localeCompare(b.path);
     });
 
-    this.items = items;
+    this.fileItems = items;
+    this.skillItems = await this.loadSkillItems();
   }
 
   private isHiddenPath(path: string): boolean {
@@ -103,6 +119,159 @@ export class FileMention {
       if (seg.startsWith(".")) return true;
     }
     return false;
+  }
+
+  private async loadSkillItems(): Promise<SkillItem[]> {
+    const skills: SkillItem[] = [];
+
+    const [projectSkills, globalSkills] = await Promise.all([
+      this.readProjectSkills(),
+      this.readGlobalSkills(),
+    ]);
+
+    for (const item of projectSkills) skills.push(item);
+    for (const item of globalSkills) {
+      if (!skills.find((skill) => skill.name === item.name)) {
+        skills.push(item);
+      }
+    }
+
+    skills.sort((a, b) => a.name.localeCompare(b.name));
+    return skills;
+  }
+
+  private getGlobalSkillsDir(): string | null {
+    const home = process.env.USERPROFILE || process.env.HOME;
+    if (!home) return null;
+    return path.join(home, ".claude", "skills");
+  }
+
+  private async readProjectSkills(): Promise<SkillItem[]> {
+    const skillsDir = ".claude/skills";
+    const adapter: any = this.app.vault.adapter as any;
+
+    try {
+      if (!(await adapter.exists(skillsDir))) {
+        return [];
+      }
+
+      const listing = (await adapter.list(skillsDir)) as {
+        files: string[];
+        folders: string[];
+      };
+
+      const out: SkillItem[] = [];
+      await Promise.all(
+        listing.folders.map(async (folder: string) => {
+          const skillFile = `${folder}/SKILL.md`;
+          const content = await this.safeReadVaultFile(skillFile);
+          if (!content) return;
+
+          const parsed = this.parseFrontmatter(content);
+          const name = parsed.name || folder.split("/").pop() || folder;
+          const description = parsed.description || "";
+
+          out.push({ name, description, path: skillFile, scope: "project" });
+        }),
+      );
+
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
+  private async safeReadVaultFile(filePath: string): Promise<string | null> {
+    const adapter: any = this.app.vault.adapter as any;
+
+    try {
+      if (!(await adapter.exists(filePath))) {
+        return null;
+      }
+
+      const content = await adapter.read(filePath);
+      return typeof content === "string" ? content : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async readGlobalSkills(): Promise<SkillItem[]> {
+    const base = this.getGlobalSkillsDir();
+    if (!base) return [];
+
+    const out: SkillItem[] = [];
+
+    try {
+      const folderNames = await this.listLocalFolders(base);
+
+      await Promise.all(
+        folderNames.map(async (name) => {
+          const skillFile = path.join(base, name, "SKILL.md");
+          const content = await this.safeReadAbsoluteFile(skillFile);
+          if (!content) return;
+
+          const parsed = this.parseFrontmatter(content);
+          const skillName = parsed.name || name;
+          const description = parsed.description || "";
+
+          out.push({
+            name: skillName,
+            description,
+            path: skillFile,
+            scope: "global",
+          });
+        }),
+      );
+
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
+  private async safeReadAbsoluteFile(filePath: string): Promise<string | null> {
+    try {
+      return await fs.promises.readFile(filePath, "utf-8");
+    } catch {
+      return null;
+    }
+  }
+
+  private async listLocalFolders(dir: string): Promise<string[]> {
+    try {
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    } catch {
+      return [];
+    }
+  }
+
+  private parseFrontmatter(content: string): Record<string, string> {
+    const lines = content.split(/\r?\n/);
+    if (lines.length < 3) return {};
+    if (lines[0].trim() !== "---") return {};
+
+    const out: Record<string, string> = {};
+
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.trim() === "---") {
+        break;
+      }
+
+      const idx = line.indexOf(":");
+      if (idx === -1) continue;
+
+      const key = line.slice(0, idx).trim();
+      const value = line.slice(idx + 1).trim();
+      if (!key) continue;
+
+      const cleaned = value.replace(/^"|"$/g, "").replace(/^'|'$/g, "");
+      out[key] = cleaned;
+    }
+
+    return out;
   }
 
   /** Create the suggestions dropdown */
@@ -114,21 +283,51 @@ export class FileMention {
   }
 
   private handlePaste(e: ClipboardEvent): void {
+    if (e.defaultPrevented) return;
+
+    this.skipNativePaste = true;
     e.preventDefault();
+    e.stopImmediatePropagation();
 
     const text = e.clipboardData?.getData("text/plain") ?? "";
     this.insertPlainTextAtCursor(text);
   }
 
   private handleDrop(e: DragEvent): void {
+    if (e.defaultPrevented) return;
+
+    this.skipNativePaste = true;
     e.preventDefault();
+    e.stopImmediatePropagation();
 
     const text = e.dataTransfer?.getData("text/plain") ?? "";
     this.insertPlainTextAtCursor(text);
   }
 
   private handleBeforeInput(e: InputEvent): void {
+    if (e.defaultPrevented) return;
+
+    if (e.inputType === "deleteContentBackward") {
+      if (this.deleteMentionAdjacentToCaret("backward")) {
+        e.preventDefault();
+      }
+      return;
+    }
+
+    if (e.inputType === "deleteContentForward") {
+      if (this.deleteMentionAdjacentToCaret("forward")) {
+        e.preventDefault();
+      }
+      return;
+    }
+
     if (e.inputType !== "insertFromPaste" && e.inputType !== "insertFromDrop") {
+      return;
+    }
+
+    if (this.skipNativePaste) {
+      this.skipNativePaste = false;
+      e.preventDefault();
       return;
     }
 
@@ -146,6 +345,8 @@ export class FileMention {
     const text = clipboard?.getData("text/plain") ?? "";
     this.insertPlainTextAtCursor(text);
   }
+
+
 
   private insertPlainTextAtCursor(text: string): void {
     const normalized = text.replace(/\r\n/g, "\n");
@@ -332,14 +533,24 @@ export class FileMention {
     const mentionMatch = this.findMentionTrigger(beforeCursor);
 
     if (mentionMatch) {
-      this.loadItems();
-      this.filterItems(mentionMatch.query);
-      this.show();
+      void this.refreshSuggestions(mentionMatch.query);
       return;
     }
 
     this.hide();
   }
+
+  private async refreshSuggestions(query: string): Promise<void> {
+    const requestId = this.mentionQueryId + 1;
+    this.mentionQueryId = requestId;
+
+    await this.loadItems();
+    if (requestId !== this.mentionQueryId) return;
+
+    this.filterItems(query);
+    this.show();
+  }
+
 
   /**
    * Ensure every chip has a ZWS before it for cursor positioning.
@@ -348,7 +559,7 @@ export class FileMention {
    */
   private ensureChipZWS(): void {
     const chips = this.inputEl.querySelectorAll(
-      ".opencodian-inline-mention-chip",
+      ".opencodian-inline-mention-chip, .opencodian-inline-skill-chip",
     );
 
     for (const chip of Array.from(chips)) {
@@ -369,22 +580,60 @@ export class FileMention {
     }
   }
 
+
   /** Filter items based on query */
   private filterItems(query: string): void {
     const lowerQuery = query.toLowerCase();
     const mentionedPaths = new Set(this.mentions.map((m) => m.path));
 
-    let filtered = this.items.filter((item) => !mentionedPaths.has(item.path));
+    let filteredFiles = this.fileItems.filter(
+      (item) => !mentionedPaths.has(item.path),
+    );
 
     if (query) {
-      filtered = filtered.filter((item) => {
+      filteredFiles = filteredFiles.filter((item) => {
         const lowerPath = item.path.toLowerCase();
         const lowerName = item.name.toLowerCase();
         return lowerPath.includes(lowerQuery) || lowerName.includes(lowerQuery);
       });
+    } else {
+      filteredFiles = filteredFiles.filter((item) => !item.path.includes("/"));
     }
 
-    this.filteredItems = filtered.slice(0, 15);
+    const mentionedSkills = new Set(this.skillMentions.map((m) => m.path));
+    let filteredSkills = this.skillItems.filter(
+      (item) => !mentionedSkills.has(item.path),
+    );
+
+    if (query) {
+      filteredSkills = filteredSkills.filter((item) => {
+        const name = item.name.toLowerCase();
+        const description = item.description.toLowerCase();
+        return name.includes(lowerQuery) || description.includes(lowerQuery);
+      });
+    }
+
+    const fileMatches: UnifiedMentionItem[] = filteredFiles.map((item) => ({
+      type: "file",
+      item,
+    }));
+    const skillMatches: UnifiedMentionItem[] = filteredSkills.map((item) => ({
+      type: "skill",
+      item,
+    }));
+
+    if (query) {
+      const maxItems = 20;
+      const maxSkills = Math.min(skillMatches.length, 8);
+      const maxFiles = Math.max(maxItems - maxSkills, 0);
+      this.filteredItems = [
+        ...fileMatches.slice(0, maxFiles),
+        ...skillMatches.slice(0, maxSkills),
+      ];
+    } else {
+      this.filteredItems = [...fileMatches, ...skillMatches];
+    }
+
     this.selectedIndex = 0;
     this.renderSuggestions();
   }
@@ -397,13 +646,13 @@ export class FileMention {
     if (this.filteredItems.length === 0) {
       const emptyEl = document.createElement("div");
       emptyEl.className = "opencodian-mention-empty";
-      emptyEl.textContent = "No files found";
+      emptyEl.textContent = "No matches found";
       this.suggestionsEl.appendChild(emptyEl);
       return;
     }
 
     for (let i = 0; i < this.filteredItems.length; i++) {
-      const item = this.filteredItems[i];
+      const option = this.filteredItems[i];
       const itemEl = document.createElement("div");
       itemEl.className = "opencodian-mention-item";
       if (i === this.selectedIndex) {
@@ -412,17 +661,32 @@ export class FileMention {
 
       const iconEl = document.createElement("span");
       iconEl.className = "opencodian-mention-icon";
-      setIcon(iconEl, item.isFolder ? "folder" : "file-text");
+      setIcon(
+        iconEl,
+        option.type === "file"
+          ? option.item.isFolder
+            ? "folder"
+            : "file-text"
+          : "wand",
+      );
       itemEl.appendChild(iconEl);
 
       const pathEl = document.createElement("span");
       pathEl.className = "opencodian-mention-path";
-      pathEl.textContent = item.path;
+      pathEl.textContent =
+        option.type === "file" ? option.item.path : option.item.name;
       itemEl.appendChild(pathEl);
+
+      if (option.type === "skill") {
+        const scopeEl = document.createElement("span");
+        scopeEl.className = "opencodian-mention-scope";
+        scopeEl.textContent = option.item.scope;
+        itemEl.appendChild(scopeEl);
+      }
 
       itemEl.addEventListener("mousedown", (e) => {
         e.preventDefault();
-        this.selectItem(item);
+        this.selectItem(option);
       });
 
       itemEl.addEventListener("mouseenter", () => {
@@ -536,12 +800,52 @@ export class FileMention {
       e.preventDefault();
       e.stopPropagation();
       this.removeMention(item);
-      chipEl.remove();
+      this.removeChipWithAdjacentZws(chipEl);
     });
     chipEl.appendChild(removeEl);
 
     return chipEl;
   }
+
+  private createSkillChip(item: SkillItem): HTMLElement {
+    const chipEl = document.createElement("span");
+    chipEl.className = "opencodian-inline-skill-chip";
+
+    chipEl.setAttribute("contenteditable", "false");
+    chipEl.setAttribute("data-skill-name", item.name);
+    chipEl.setAttribute("data-skill-path", item.path);
+    chipEl.setAttribute("data-skill-scope", item.scope);
+    chipEl.title = item.description || item.name;
+
+    const clickArea = document.createElement("span");
+    clickArea.className = "opencodian-inline-skill-chip-click";
+
+    const iconEl = document.createElement("span");
+    iconEl.className = "opencodian-inline-skill-chip-icon";
+    setIcon(iconEl, "wand");
+    clickArea.appendChild(iconEl);
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "opencodian-inline-skill-chip-name";
+    nameEl.textContent = item.name;
+    clickArea.appendChild(nameEl);
+
+    chipEl.appendChild(clickArea);
+
+    const removeEl = document.createElement("span");
+    removeEl.className = "opencodian-inline-skill-chip-remove";
+    setIcon(removeEl, "x");
+    removeEl.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.removeSkillMention(item);
+      this.removeChipWithAdjacentZws(chipEl);
+    });
+    chipEl.appendChild(removeEl);
+
+    return chipEl;
+  }
+
 
   private insertNodeAtCursor(node: Node): void {
     const range = this.getSelectionRangeInInput();
@@ -563,13 +867,176 @@ export class FileMention {
     sel.addRange(after);
   }
 
+  private removeChipWithAdjacentZws(chipEl: HTMLElement): void {
+    const prev = chipEl.previousSibling;
+    const next = chipEl.nextSibling;
+
+    const removeZwsNode = (node: Node | null): void => {
+      if (!node) return;
+      if (node.nodeType !== Node.TEXT_NODE) return;
+      const text = node as Text;
+      if (text.data !== FileMention.ZWS) return;
+      text.remove();
+    };
+
+    const setCaretAfter = (node: Node): void => {
+      const range = document.createRange();
+      range.setStartAfter(node);
+      range.collapse(true);
+      const sel = window.getSelection();
+      if (!sel) return;
+      sel.removeAllRanges();
+      sel.addRange(range);
+    };
+
+    const focusAfter = next;
+    chipEl.remove();
+
+    removeZwsNode(prev);
+    removeZwsNode(next);
+
+    if (focusAfter && focusAfter.parentNode) {
+      setCaretAfter(focusAfter);
+      return;
+    }
+
+    const parent = this.inputEl;
+    if (parent.lastChild) {
+      setCaretAfter(parent.lastChild);
+      return;
+    }
+
+    parent.focus();
+  }
+
+  private deleteMentionAdjacentToCaret(
+    direction: "backward" | "forward",
+  ): boolean {
+    const range = this.getSelectionRangeInInput();
+    if (!range) return false;
+    if (!range.collapsed) return false;
+
+    const point = {
+      node: range.startContainer,
+      offset: range.startOffset,
+    };
+
+    const findChip = (
+      node: Node | null,
+    ): HTMLElement | null => {
+      if (!node) return null;
+      if (!(node instanceof HTMLElement)) return null;
+      if (node.classList.contains("opencodian-inline-mention-chip")) return node;
+      if (node.classList.contains("opencodian-inline-skill-chip")) return node;
+      return null;
+    };
+
+    const isZwsText = (n: Node | null): n is Text => {
+      if (!n) return false;
+      if (n.nodeType !== Node.TEXT_NODE) return false;
+      return (n as Text).data === FileMention.ZWS;
+    };
+
+    const chipFromCaretNode = (): HTMLElement | null => {
+      if (point.node.nodeType !== Node.TEXT_NODE) return null;
+      if (!isZwsText(point.node)) return null;
+      if (direction === "backward") {
+        return findChip(point.node.previousSibling);
+      }
+      return findChip(point.node.nextSibling);
+    };
+
+    const adjacentSibling = (
+      dir: "backward" | "forward",
+    ): Node | null => {
+      if (point.node.nodeType === Node.TEXT_NODE) {
+        const text = point.node as Text;
+        if (dir === "backward") {
+          if (point.offset !== 0) return null;
+          return text.previousSibling;
+        }
+        if (point.offset !== text.data.length) return null;
+        return text.nextSibling;
+      }
+
+      // Element container: selection offset is child index.
+      const el = point.node as Element;
+      const idx = point.offset;
+      if (dir === "backward") {
+        return idx > 0 ? el.childNodes[idx - 1] : null;
+      }
+      return idx < el.childNodes.length ? el.childNodes[idx] : null;
+    };
+
+    // Many browsers place caret “inside” a ZWS text node around chips.
+    // Treat deleting adjacent ZWS+chip as deleting the chip itself.
+    const deleteChip = (chip: HTMLElement): boolean => {
+      if (!this.inputEl.contains(chip)) return false;
+
+      if (chip.classList.contains("opencodian-inline-mention-chip")) {
+        const p = chip.getAttribute("data-mention-path") || "";
+        if (p) {
+          this.mentions = this.mentions.filter((m) => m.path !== p);
+          if (this.activeFileMention && this.activeFileMention.path === p) {
+            this.activeFileMention = null;
+          }
+        }
+      }
+
+      if (chip.classList.contains("opencodian-inline-skill-chip")) {
+        const p = chip.getAttribute("data-skill-path") || "";
+        if (p) {
+          this.skillMentions = this.skillMentions.filter((m) => m.path !== p);
+        }
+      }
+
+      this.removeChipWithAdjacentZws(chip);
+      return true;
+    };
+
+    const directChip = chipFromCaretNode();
+    if (directChip) {
+      return deleteChip(directChip);
+    }
+
+    const sibling = adjacentSibling(direction);
+
+    const getChipFromNode = (n: Node | null): HTMLElement | null => {
+      const direct = findChip(n);
+      if (direct) return direct;
+
+      if (isZwsText(n)) {
+        if (direction === "backward") {
+          return findChip(n.previousSibling);
+        }
+        return findChip(n.nextSibling);
+      }
+
+      return null;
+    };
+
+    const chip = getChipFromNode(sibling);
+    if (!chip) return false;
+
+    return deleteChip(chip);
+  }
+
   private insertTextAtCursor(text: string): void {
     const node = document.createTextNode(text);
     this.insertNodeAtCursor(node);
   }
 
   /** Select an item - insert chip and remove @query */
-  private selectItem(item: MentionItem): void {
+  private selectItem(item: UnifiedMentionItem): void {
+    if (item.type === "file") {
+      this.insertFileMention(item.item);
+      return;
+    }
+
+    this.insertSkillMention(item.item);
+  }
+
+  private insertFileMention(item: MentionItem): void {
     if (!this.mentions.find((m) => m.path === item.path)) {
       this.mentions.push(item);
     }
@@ -577,19 +1044,15 @@ export class FileMention {
     if (this.mentionRange) {
       this.mentionRange.deleteContents();
 
-      // Create chip with ZWS wrapper for proper cursor behavior
       const chipEl = this.createInlineChip(item, false);
 
-      // Insert ZWS before chip (ensures cursor can be placed before)
       const zwsBefore = document.createTextNode(FileMention.ZWS);
       this.mentionRange.insertNode(zwsBefore);
       zwsBefore.after(chipEl);
 
-      // Insert space after chip (natural text flow)
       const space = document.createTextNode(" ");
       chipEl.after(space);
 
-      // Position cursor after the space
       const after = document.createRange();
       after.setStartAfter(space);
       after.collapse(true);
@@ -602,7 +1065,6 @@ export class FileMention {
 
       this.mentionRange = null;
     } else {
-      // Insert ZWS before chip
       this.insertTextAtCursor(FileMention.ZWS);
       this.insertNodeAtCursor(this.createInlineChip(item, false));
       this.insertTextAtCursor(" ");
@@ -611,6 +1073,45 @@ export class FileMention {
     this.hide();
     this.inputEl.focus();
   }
+
+  private insertSkillMention(item: SkillItem): void {
+    if (!this.skillMentions.find((m) => m.path === item.path)) {
+      this.skillMentions.push(item);
+    }
+
+    if (this.mentionRange) {
+      this.mentionRange.deleteContents();
+
+      const chipEl = this.createSkillChip(item);
+
+      const zwsBefore = document.createTextNode(FileMention.ZWS);
+      this.mentionRange.insertNode(zwsBefore);
+      zwsBefore.after(chipEl);
+
+      const space = document.createTextNode(" ");
+      chipEl.after(space);
+
+      const after = document.createRange();
+      after.setStartAfter(space);
+      after.collapse(true);
+
+      const sel = window.getSelection();
+      if (sel) {
+        sel.removeAllRanges();
+        sel.addRange(after);
+      }
+
+      this.mentionRange = null;
+    } else {
+      this.insertTextAtCursor(FileMention.ZWS);
+      this.insertNodeAtCursor(this.createSkillChip(item));
+      this.insertTextAtCursor(" ");
+    }
+
+    this.hide();
+    this.inputEl.focus();
+  }
+
 
   private show(): void {
     if (!this.suggestionsEl) return;
@@ -660,6 +1161,11 @@ export class FileMention {
     }
   }
 
+  private removeSkillMention(item: SkillItem): void {
+    this.skillMentions = this.skillMentions.filter((m) => m.path !== item.path);
+  }
+
+
   /** Get current mention paths */
   getMentionPaths(): string[] {
     return this.getMentionsFromDom().map((m) => m.path);
@@ -681,13 +1187,40 @@ export class FileMention {
     return out;
   }
 
+  private getSkillMentionsFromDom(): SkillItem[] {
+    const els = this.inputEl.querySelectorAll(
+      ".opencodian-inline-skill-chip[data-skill-path]",
+    );
+
+    const out: SkillItem[] = [];
+    for (const el of Array.from(els)) {
+      const skillPath = el.getAttribute("data-skill-path") || "";
+      const name = el.getAttribute("data-skill-name") || "";
+      const scope =
+        el.getAttribute("data-skill-scope") === "global" ? "global" : "project";
+      if (!skillPath || !name) continue;
+      out.push({ name, description: "", path: skillPath, scope });
+    }
+    return out;
+  }
+
   getMentions(): MentionItem[] {
     return this.getMentionsFromDom();
   }
 
+
   getText(): string {
-    return this.getPlainTextWithMentionNames();
+    return this.getPlainTextWithAllNames();
   }
+
+  getSkills(): SkillItem[] {
+    return this.getSkillMentionsFromDom();
+  }
+
+  getTextWithSkills(): string {
+    return this.getPlainTextWithAllNames();
+  }
+
 
   clear(): void {
     this.clearMentions();
@@ -700,13 +1233,24 @@ export class FileMention {
    */
   getTextAndMentionsAndClear(): { text: string; mentions: MentionItem[] } {
     const mentions = this.getMentionsFromDom();
-    const text = this.getPlainTextWithMentionNames();
+    const text = this.getPlainTextWithAllNames();
 
     this.clearMentions();
     this.clearInput();
 
     return { text, mentions };
   }
+
+  getTextAndSkillsAndClear(): { text: string; skills: SkillItem[] } {
+    const skills = this.getSkillMentionsFromDom();
+    const text = this.getPlainTextWithAllNames();
+
+    this.clearMentions();
+    this.clearInput();
+
+    return { text, skills };
+  }
+
 
   private clearInput(): void {
     this.inputEl.innerHTML = "";
@@ -718,30 +1262,44 @@ export class FileMention {
   }
 
   private getPlainTextWithMentionNames(): string {
+    return this.getPlainTextWithAllNames();
+  }
+
+  private getPlainTextWithAllNames(): string {
     const clone = this.inputEl.cloneNode(true) as HTMLElement;
 
-    const chips = clone.querySelectorAll(
+    const fileChips = clone.querySelectorAll(
       ".opencodian-inline-mention-chip[data-mention-name]",
     );
-    for (const chip of Array.from(chips)) {
+    for (const chip of Array.from(fileChips)) {
       const name = chip.getAttribute("data-mention-name") || "";
       chip.replaceWith(document.createTextNode(name));
     }
 
-    // Remove ZWS characters that are only used for cursor positioning
+    const skillChips = clone.querySelectorAll(
+      ".opencodian-inline-skill-chip[data-skill-name]",
+    );
+    for (const chip of Array.from(skillChips)) {
+      const name = chip.getAttribute("data-skill-name") || "";
+      chip.replaceWith(document.createTextNode(name));
+    }
+
     return (clone.textContent || "").replace(/\u200B/g, "").trim();
   }
+
 
   /** Clear all mentions (both manual and active file) */
   clearMentions(): void {
     this.mentions = [];
+    this.skillMentions = [];
     this.activeFileMention = null;
 
     const chips = this.inputEl.querySelectorAll(
-      ".opencodian-inline-mention-chip",
+      ".opencodian-inline-mention-chip, .opencodian-inline-skill-chip",
     );
     chips.forEach((el) => el.remove());
   }
+
 
   /** Check if suggestions dropdown is open */
   isSuggestionsOpen(): boolean {
@@ -749,7 +1307,7 @@ export class FileMention {
   }
 
   refresh(): void {
-    this.loadItems();
+    void this.loadItems();
   }
 
   /** Add a mention programmatically */
@@ -758,7 +1316,7 @@ export class FileMention {
       return false;
     }
 
-    const item = this.items.find((i) => i.path === path);
+    const item = this.fileItems.find((fileItem) => fileItem.path === path);
     if (!item) {
       const file = this.app.vault.getAbstractFileByPath(path);
       if (!file) return false;
@@ -774,6 +1332,7 @@ export class FileMention {
 
     return true;
   }
+
 
   /** Set the active file mention (insert or update a pinned chip) */
   setActiveFileMention(path: string | null): void {
@@ -832,3 +1391,4 @@ export class FileMention {
     }
   }
 }
+
