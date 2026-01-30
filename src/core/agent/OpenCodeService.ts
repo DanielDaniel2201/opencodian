@@ -872,6 +872,10 @@ export class OpenCodeService {
     }
   }
 
+  async ensureSessionId(): Promise<string> {
+    return this.ensureSession();
+  }
+
   setSessionId(sessionId: string | null): void {
     this.sessionId = sessionId;
   }
@@ -883,6 +887,7 @@ export class OpenCodeService {
   resetSession(): void {
     this.sessionId = null;
   }
+
 
   cleanup(): void {
     this.cancel();

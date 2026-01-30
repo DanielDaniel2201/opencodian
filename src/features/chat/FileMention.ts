@@ -355,6 +355,7 @@ export class FileMention {
     if (!range) {
       this.inputEl.appendChild(document.createTextNode(normalized));
       this.moveCaretToEnd();
+      this.dispatchInputEvent();
       return;
     }
 
@@ -369,6 +370,12 @@ export class FileMention {
     if (!sel) return;
     sel.removeAllRanges();
     sel.addRange(range);
+    this.dispatchInputEvent();
+  }
+
+  private dispatchInputEvent(): void {
+    const event = new Event("input", { bubbles: true });
+    this.inputEl.dispatchEvent(event);
   }
 
   private moveCaretToEnd(): void {

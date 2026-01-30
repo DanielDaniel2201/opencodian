@@ -559,8 +559,13 @@ export class OpencodianView extends ItemView {
     // Set generating state
     this.setGeneratingState(true);
 
-    // Clear welcome message if present
-    this.clearWelcomeMessage();
+     // Clear welcome message if present
+     this.clearWelcomeMessage();
+
+     if (this.plugin.settings.activeConversationId) {
+       await this.plugin.loadConversation(this.plugin.settings.activeConversationId);
+     }
+
 
     // Save to conversation
     const convMeta = this.plugin
@@ -568,9 +573,13 @@ export class OpencodianView extends ItemView {
       .find((c) => c.id === this.plugin.settings.activeConversationId);
 
     const convId = convMeta?.id ?? this.plugin.settings.activeConversationId;
-    const conv = convId ? await this.plugin.loadConversation(convId) : null;
-    this.currentConversation = conv;
-    const messageId = this.createMessageId();
+     const conv = convId ? await this.plugin.loadConversation(convId) : null;
+     this.currentConversation = conv;
+     if (conv) {
+       await this.plugin.ensureConversationSession(conv);
+     }
+     const messageId = this.createMessageId();
+
 
     // Add user message to UI (with mentions/skills)
     this.addMessage(
@@ -901,10 +910,13 @@ export class OpencodianView extends ItemView {
       this.setGeneratingState(false);
     }
 
-    const conv = this.currentConversation;
-    if (!conv) return;
+     const conv = this.currentConversation;
+     if (!conv) return;
 
-    const resolvedIdx = this.getMessageIndex(messageId);
+     await this.plugin.ensureConversationSession(conv);
+
+     const resolvedIdx = this.getMessageIndex(messageId);
+
     if (resolvedIdx < 0 || resolvedIdx >= conv.messages.length) return;
 
     const original = conv.messages[resolvedIdx];

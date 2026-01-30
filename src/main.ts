@@ -147,6 +147,8 @@ export default class OpencodianPlugin extends Plugin {
     if (!conversation) return null;
 
     this.activeConversation = conversation;
+    this.activeConversationId = conversation.id;
+    this.agentService.setSessionId(conversation.sessionId ?? null);
     return conversation;
   }
 
@@ -175,6 +177,18 @@ export default class OpencodianPlugin extends Plugin {
     }
 
     this.conversations = await this.sessionStorage.listConversations();
+  }
+
+  async ensureConversationSession(conversation: Conversation): Promise<void> {
+    if (conversation.sessionId) return;
+
+    const sessionId = await this.agentService.ensureSessionId();
+    conversation.sessionId = sessionId;
+    await this.sessionStorage.saveConversation(conversation);
+
+    if (this.activeConversation?.id === conversation.id) {
+      this.activeConversation = conversation;
+    }
   }
 
   /** Switch to a different conversation */
