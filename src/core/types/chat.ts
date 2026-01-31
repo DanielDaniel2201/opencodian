@@ -19,6 +19,11 @@ export interface ChatMessage {
    */
   content?: string;
   /**
+   * OpenCode server message id for this entry.
+   */
+  serverId?: string;
+
+  /**
    * Error text for assistant messages.
    * Stored so reload can show same error.
    */
@@ -106,4 +111,6 @@ export type StreamChunk =
   | { type: 'tool_result'; toolUseId: string; result: string }
   | { type: 'thinking'; content: string }
   | { type: 'error'; content: string }
+  | { type: 'server_message'; role: 'user' | 'assistant'; messageId: string }
   | { type: 'done' };
+

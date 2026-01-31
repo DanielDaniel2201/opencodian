@@ -647,10 +647,13 @@ export class OpencodianView extends ItemView {
     // Track timeline state at outer scope so catch block can access
     const items: ChatItem[] = [];
     const toolItemsById = new Map<string, ChatItem>();
+    let pendingServerUserId: string | null = null;
+    let shouldPersistItems = true;
 
     // The currently active (last) text item & its DOM.
     let activeTextId: string | null = null;
     let activeTextEl: HTMLElement | null = null;
+
 
     try {
       const isTextItem = (
@@ -680,9 +683,22 @@ export class OpencodianView extends ItemView {
           mentionContexts:
             mentionContexts.length > 0 ? mentionContexts : undefined,
           allowedTools: skillsFinal?.map((s) => s.name),
+          conversationId: conv?.id ?? undefined,
         },
+
       )) {
+        if (chunk.type === "server_message") {
+          if (chunk.role === "user") {
+            if (pendingServerUserId && pendingServerUserId !== chunk.messageId) {
+              shouldPersistItems = false;
+            }
+            pendingServerUserId = chunk.messageId;
+          }
+          continue;
+        }
+
         if (chunk.type === "text") {
+
           clearWorking();
 
           if (activeTextId && activeTextEl) {
@@ -805,6 +821,22 @@ export class OpencodianView extends ItemView {
           }
 
           if (conv) {
+            if (pendingServerUserId) {
+              const lastUser = [...conv.messages]
+                .reverse()
+                .find((m): m is Conversation["messages"][number] => m.role === "user");
+              if (lastUser && !lastUser.serverId) {
+                lastUser.serverId = pendingServerUserId;
+              }
+              pendingServerUserId = null;
+            }
+
+            if (!shouldPersistItems) {
+              await this.plugin.saveConversation(conv);
+              this.setGeneratingState(false);
+              continue;
+            }
+
             if (items.length === 0) {
               conv.messages.push({
                 id: this.createMessageId(),
@@ -826,6 +858,41 @@ export class OpencodianView extends ItemView {
             });
             await this.plugin.saveConversation(conv);
           }
+
+
+          if (conv) {
+            if (pendingServerUserId) {
+              const lastUser = [...conv.messages]
+                .reverse()
+                .find((m): m is Conversation["messages"][number] => m.role === "user");
+              if (lastUser && !lastUser.serverId) {
+                lastUser.serverId = pendingServerUserId;
+              }
+              pendingServerUserId = null;
+            }
+
+            if (items.length === 0) {
+              conv.messages.push({
+                id: this.createMessageId(),
+                role: "assistant",
+                type: "message",
+                error: "No response received. Please try again.",
+                timestamp: Date.now(),
+              });
+              await this.plugin.saveConversation(conv);
+              continue;
+            }
+
+            conv.messages.push({
+              id: this.createMessageId(),
+              role: "assistant",
+              type: "message",
+              items,
+              timestamp: Date.now(),
+            });
+            await this.plugin.saveConversation(conv);
+          }
+
 
           this.setGeneratingState(false);
           continue;
@@ -922,6 +989,23 @@ export class OpencodianView extends ItemView {
     const original = conv.messages[resolvedIdx];
     if (original.role !== "user") return;
 
+    if (original.serverId) {
+      try {
+        await this.plugin.agentService.revertSessionMessage(original.serverId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        console.error("[OpencodianView] Failed to revert server message:", message);
+        new Notice("Failed to revert server message. Please try again.");
+        return;
+      }
+    } else {
+      this.plugin.agentService.resetSession();
+      conv.sessionId = null;
+      await this.plugin.saveConversation(conv);
+      await this.plugin.ensureConversationSession(conv);
+    }
+
+
     const messages = conv.messages.slice(0, resolvedIdx);
 
     const nextUser = {
@@ -972,9 +1056,12 @@ export class OpencodianView extends ItemView {
     };
 
     const items: ChatItem[] = [];
+    let pendingServerUserId: string | null = null;
+    let shouldPersistItems = true;
 
     let activeTextId: string | null = null;
     let activeTextEl: HTMLElement | null = null;
+
 
     try {
       const isTextItem = (
@@ -1002,9 +1089,22 @@ export class OpencodianView extends ItemView {
         conv.messages,
         {
           model: this.plugin.settings.model,
+          conversationId: conv.id,
         },
+
       )) {
+        if (chunk.type === "server_message") {
+          if (chunk.role === "user") {
+            if (pendingServerUserId && pendingServerUserId !== chunk.messageId) {
+              shouldPersistItems = false;
+            }
+            pendingServerUserId = chunk.messageId;
+          }
+          continue;
+        }
+
         if (chunk.type === "text") {
+
           clearWorking();
 
           if (activeTextId && activeTextEl) {
@@ -1115,6 +1215,23 @@ export class OpencodianView extends ItemView {
 
           await renderActiveMarkdown();
 
+          if (pendingServerUserId) {
+            const lastUser = [...conv.messages]
+              .reverse()
+              .find((m): m is Conversation["messages"][number] => m.role === "user");
+            if (lastUser && !lastUser.serverId) {
+              lastUser.serverId = pendingServerUserId;
+            }
+            pendingServerUserId = null;
+          }
+
+          if (!shouldPersistItems) {
+            await this.plugin.saveConversation(conv);
+            this.scrollToBottom();
+            this.setGeneratingState(false);
+            continue;
+          }
+
           if (items.length === 0) {
             const msg = "No response received. Please try again.";
             this.addErrorMessage(msg);
@@ -1148,6 +1265,7 @@ export class OpencodianView extends ItemView {
           this.setGeneratingState(false);
           continue;
         }
+
       }
     } catch (error) {
       clearWorking();

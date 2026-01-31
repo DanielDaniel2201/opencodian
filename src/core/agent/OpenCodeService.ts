@@ -35,9 +35,12 @@ export interface QueryOptions {
   mentions?: string[];
   /** Rich mention context with folder contents */
   mentionContexts?: MentionContext[];
+  /** Conversation id for debug logging */
+  conversationId?: string;
   /** Timeout in milliseconds for the entire query (default: 120000 = 2 minutes) */
   timeout?: number;
 }
+
 
 type OpencodeClient = ReturnType<typeof createOpencodeClient>;
 
@@ -62,7 +65,8 @@ export class OpenCodeService {
   // Debug logging
   private app: App | null = null;
   private debugEnabled: boolean = true;
-  private readonly DEBUG_FILE = "opencodian-debug.json";
+  private readonly DEBUG_SESSIONS_PATH = ".obsidian/plugins/opencodian/sessions-debug";
+
 
   constructor() {
     // Lazy initialization
@@ -79,40 +83,47 @@ export class OpenCodeService {
   }
 
   /** Save a turn to debug file */
-  private async saveDebugTurn(turn: DebugTurn): Promise<void> {
+  private async saveDebugTurn(conversationId: string, turn: DebugTurn): Promise<void> {
     if (!this.debugEnabled || !this.app) return;
 
     try {
       const vault = this.app.vault;
-      let existingData: DebugTurn[] = [];
+      const filePath = `${this.DEBUG_SESSIONS_PATH}/${conversationId}.jsonl`;
+      const line = `${JSON.stringify(turn)}\n`;
 
-      // Read existing file
-      const file = vault.getAbstractFileByPath(this.DEBUG_FILE);
-      if (file && "extension" in file) {
-        const content = await vault.read(file as any);
-        try {
-          existingData = JSON.parse(content);
-        } catch {
-          existingData = [];
-        }
-      }
-
-      // Append new turn
-      existingData.push(turn);
-
-      // Write back
-      const newContent = JSON.stringify(existingData, null, 2);
-      if (file && "extension" in file) {
-        await vault.modify(file as any, newContent);
+      await this.ensureDebugFolder();
+      if (await vault.adapter.exists(filePath)) {
+        await vault.adapter.append(filePath, line);
       } else {
-        await vault.create(this.DEBUG_FILE, newContent);
+        await vault.adapter.write(filePath, line);
       }
 
-      console.log(`[OpenCodeService] Debug turn saved to ${this.DEBUG_FILE}`);
+      console.log(`[OpenCodeService] Debug turn saved to ${filePath}`);
     } catch (error) {
       console.error("[OpenCodeService] Failed to save debug turn:", error);
     }
   }
+
+  private async ensureDebugFolder(): Promise<void> {
+    if (!this.app) return;
+
+    try {
+      const adapter = this.app.vault.adapter;
+      if (await adapter.exists(this.DEBUG_SESSIONS_PATH)) return;
+
+      const parts = this.DEBUG_SESSIONS_PATH.split("/").filter(Boolean);
+      let current = "";
+      for (const part of parts) {
+        current = current ? `${current}/${part}` : part;
+        if (!(await adapter.exists(current))) {
+          await adapter.mkdir(current);
+        }
+      }
+    } catch (error) {
+      console.error("[OpenCodeService] Failed to ensure debug folder:", error);
+    }
+  }
+
 
   /**
    * Create a client with Node.js http module to bypass CORS consistently
@@ -571,6 +582,8 @@ export class OpenCodeService {
     if (firstEvent.value?.type !== "server.connected") {
       console.warn("[OpenCode] Expected server.connected, got:", firstEvent.value?.type);
     }
+    debugEvents.push(firstEvent.value);
+
 
     // Build request body
     const parts: Array<{ type: string; text?: string }> = [];
@@ -772,7 +785,19 @@ export class OpenCodeService {
             content: event.properties.error?.message || "Session error",
           };
         }
+
+        if (event.type === "message.updated") {
+          const info = event.properties?.info;
+          if (info?.sessionID === sessionId && info?.id && info?.role) {
+            yield {
+              type: "server_message",
+              role: info.role,
+              messageId: info.id,
+            };
+          }
+        }
       }
+
 
       if (!isSessionIdle) {
         const errorMsg = "Stream ended prematurely (no session.idle received)";
@@ -783,11 +808,12 @@ export class OpenCodeService {
       await promptPromise;
       
       // Save debug turn
-      await this.saveDebugTurn({
-        timestamp: new Date().toISOString(),
-        userPrompt: prompt,
-        events: debugEvents,
-      });
+       await this.saveDebugTurn(queryOptions?.conversationId ?? sessionId, {
+         timestamp: new Date().toISOString(),
+         userPrompt: prompt,
+         events: debugEvents,
+       });
+
       
       yield { type: "done" };
     } catch (error) {
@@ -836,11 +862,12 @@ export class OpenCodeService {
       console.error("[OpenCodeService] Yielding error to UI:", finalError.message);
       
       // Save debug turn even on error
-      await this.saveDebugTurn({
+      await this.saveDebugTurn(queryOptions?.conversationId ?? sessionId, {
         timestamp: new Date().toISOString(),
         userPrompt: prompt,
         events: [...debugEvents, { type: "error", error: finalError.message }],
       });
+
       
       yield {
         type: "error",
@@ -874,6 +901,22 @@ export class OpenCodeService {
 
   async ensureSessionId(): Promise<string> {
     return this.ensureSession();
+  }
+
+  async revertSessionMessage(messageId: string): Promise<void> {
+    if (!this.client) {
+      await this.init();
+    }
+
+    if (!this.client) {
+      throw new Error("OpenCode client not initialized");
+    }
+
+    const sessionId = await this.ensureSession();
+    await this.client.session.revert({
+      path: { id: sessionId },
+      body: { messageID: messageId },
+    });
   }
 
   setSessionId(sessionId: string | null): void {
