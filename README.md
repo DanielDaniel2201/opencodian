@@ -39,7 +39,7 @@ Before using Opencodian, you must have [OpenCode](https://github.com/sst/opencod
 1.  Clone this repository.
 2.  Install dependencies:
     
-up to date, audited 1 package in 17s
+up to date, audited 1 package in 374ms
 
 found 0 vulnerabilities
 3.  Build the plugin:
@@ -64,5 +64,5 @@ found 0 vulnerabilities
 ## Acknowledgements
 
 Special thanks to:
-- **[OpenCode](https://github.com/opencode-ai)**: For the core AI coding agent platform.
-- **[Claudian](https://github.com/anthropic/claudian)**: For the architectural inspiration and reference implementation.
+- **[OpenCode](https://github.com/sst/opencode)**: For the core AI coding agent platform.
+- **[Claudian](https://github.com/YishenTu/claudian)**: For the architectural inspiration and reference implementation.
