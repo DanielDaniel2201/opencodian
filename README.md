@@ -20,7 +20,7 @@ Before using Opencodian, you must have [OpenCode](https://github.com/sst/opencod
 
 - [ ] Custom system prompts
 - [ ] MCP server integration
-- [ ] Subscription-aware model selection
+- [x] Subscription-aware model selection
 - [ ] Cross-conversation memory
 
 ## Quick Start
@@ -28,9 +28,9 @@ Before using Opencodian, you must have [OpenCode](https://github.com/sst/opencod
 ### Method 1: Download Release (Recommended for Users)
 
 1.  Download the latest release from the [Releases](https://github.com/DanielDaniel2201/opencodian/releases) page.
-2.  Navigate to your Obsidian vault's plugin directory: .
-3.  Create a new folder named .
-4.  Extract the downloaded files (, , ) into this new folder.
+2.  Navigate to your Obsidian vault's plugin directory: `<YourVaultPath>/.obsidian/plugins/`.
+3.  Create a new folder named `opencodian`.
+4.  Extract the downloaded files (`main.js`, `manifest.json`, `styles.css`) into this new folder.
 5.  Restart Obsidian or reload plugins.
 6.  Enable "Opencodian" in **Settings > Community plugins**.
 
@@ -38,28 +38,21 @@ Before using Opencodian, you must have [OpenCode](https://github.com/sst/opencod
 
 1.  Clone this repository.
 2.  Install dependencies:
-    
-up to date, audited 1 package in 374ms
-
-found 0 vulnerabilities
+    ```bash
+    npm install
+    ```
 3.  Build the plugin:
-    
-> dark-mode-demo@1.0.0 build
-> echo 'Building giant React project... Success!'
-
-'Building giant React project... Success!'
-4.  Copy , , and  to your vault's plugin folder: .
+    ```bash
+    npm run build
+    ```
+4.  Copy `main.js`, `manifest.json`, and `styles.css` to your vault's plugin folder: `<YourVaultPath>/.obsidian/plugins/opencodian/`.
 5.  Enable the plugin in Obsidian settings.
 
 ## Development
 
-1.  **Build**: 
-> dark-mode-demo@1.0.0 build
-> echo 'Building giant React project... Success!'
-
-'Building giant React project... Success!'
-2.  **Dev Mode**: 
-3.  **Lint**: 
+1.  **Build**: `npm run build`
+2.  **Dev Mode**: `npm run dev`
+3.  **Lint**: `npm run lint`
 
 ## Acknowledgements
 
