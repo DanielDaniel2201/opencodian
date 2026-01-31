@@ -1639,10 +1639,49 @@ export class OpencodianView extends ItemView {
         "",
         this,
       );
+      this.enrichCodeBlocks(container);
     } catch {
       // Fallback to plain text
       container.removeClass("opencodian-markdown");
       container.textContent = content;
+    }
+  }
+
+  private enrichCodeBlocks(container: HTMLElement): void {
+    const codeBlocks = container.findAll("pre");
+    for (const pre of codeBlocks) {
+      // Remove Obsidian's default copy button if present (it's injected by MarkdownRenderer)
+      const defaultBtn = pre.querySelector(".copy-code-button");
+      if (defaultBtn) defaultBtn.remove();
+
+      // Check if copy button already exists (avoid duplicates)
+      if (pre.querySelector(".opencodian-code-copy-btn")) continue;
+
+      // Create ghost copy button
+      const copyBtn = pre.createDiv({
+        cls: "opencodian-code-copy-btn",
+        attr: { "aria-label": "Copy code" },
+      });
+      setIcon(copyBtn, "copy");
+
+      copyBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const code =
+          pre.querySelector("code")?.textContent || pre.textContent || "";
+        void navigator.clipboard.writeText(code);
+
+        // Success feedback
+        setIcon(copyBtn, "check");
+        copyBtn.addClass("success");
+
+        setTimeout(() => {
+          setIcon(copyBtn, "copy");
+          copyBtn.removeClass("success");
+        }, 2000);
+
+        new Notice("Code copied to clipboard");
+      });
     }
   }
 
