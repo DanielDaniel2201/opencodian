@@ -7,10 +7,14 @@
  */
 
 import { createOpencodeClient } from "@opencode-ai/sdk/client";
+import type { App } from "obsidian";
+
 import { spawn } from "child_process";
 import * as http from "http";
 import * as readline from "readline";
-import type { App } from "obsidian";
+import path from "path";
+import { pathToFileURL } from "url";
+
 import type { ChatMessage, ImageAttachment, StreamChunk, ConfigProvidersResponse } from "../types";
 import { 
   OpencodianError, 
@@ -605,37 +609,48 @@ export class OpenCodeService {
 
 
     // Build request body
-    const parts: Array<{ type: string; text?: string }> = [];
-    
-      // Prepend mentioned files context with rich information
-    let finalPrompt = prompt;
-    if (queryOptions?.mentionContexts && queryOptions.mentionContexts.length > 0) {
-      // Use rich context format
-      const contextLines: string[] = [];
-      const vaultPath = this.getVaultBasePath() || "";
-      
-      for (const ctx of queryOptions.mentionContexts) {
-        const fullPath = vaultPath ? `${vaultPath}/${ctx.path}`.replace(/\//g, "\\") : ctx.path;
-        
-        if (ctx.isFolder) {
-          contextLines.push(`Directory: ${fullPath}`);
-          if (ctx.children && ctx.children.length > 0) {
-            // Provide a hint of contents, but encourage using tools to explore if needed
-            contextLines.push(`  (Contains: ${ctx.children.join(", ")})`);
-          }
-        } else {
-          contextLines.push(`File: ${fullPath}`);
-        }
+    const parts: Array<
+      | { type: "text"; text: string }
+      | { type: "file"; url: string; filename: string; mime: string }
+    > = [];
+
+    const vaultPath = this.getVaultBasePath();
+    const ensureAbsolute = (input: string): string => {
+      if (!vaultPath || path.isAbsolute(input)) {
+        return input;
       }
-      
-      finalPrompt = `Mentioned Paths (Absolute paths - accessible directly via tools):\n${contextLines.join("\n")}\n\n${prompt}`;
+      return path.join(vaultPath, input);
+    };
+
+    const normalizeForUrl = (input: string): string => {
+      const normalized = ensureAbsolute(input);
+      return path.normalize(normalized);
+    };
+
+    const addFilePart = (filePath: string, isFolder: boolean): void => {
+      const resolvedPath = normalizeForUrl(filePath);
+      const url = pathToFileURL(resolvedPath).toString();
+      const filename = path.basename(resolvedPath) || resolvedPath;
+      parts.push({
+        type: "file",
+        url,
+        filename,
+        mime: isFolder ? "application/x-directory" : "text/plain",
+      });
+    };
+
+    if (queryOptions?.mentionContexts && queryOptions.mentionContexts.length > 0) {
+      for (const ctx of queryOptions.mentionContexts) {
+        addFilePart(ctx.path, ctx.isFolder);
+      }
     } else if (queryOptions?.mentions && queryOptions.mentions.length > 0) {
-      // Fallback to simple path list
-      const mentionList = queryOptions.mentions.map(p => `- ${p}`).join("\n");
-      finalPrompt = `Context files:\n${mentionList}\n\n${prompt}`;
+      for (const mention of queryOptions.mentions) {
+        addFilePart(mention, false);
+      }
     }
-    
-    parts.push({ type: "text", text: finalPrompt });
+
+    parts.push({ type: "text", text: prompt });
+
 
     let modelConfig = undefined;
     if (queryOptions?.model) {
@@ -653,6 +668,7 @@ export class OpenCodeService {
     debugMeta.allowedTools = queryOptions?.allowedTools ?? [];
     debugMeta.mentionCount = queryOptions?.mentions?.length ?? 0;
     debugMeta.mentionContextCount = queryOptions?.mentionContexts?.length ?? 0;
+    debugMeta.filePartCount = parts.filter((part) => part.type === "file").length;
 
 
     const body = JSON.stringify({
