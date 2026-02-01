@@ -620,13 +620,15 @@ export class OpenCodeService {
 
     let modelConfig = undefined;
     if (queryOptions?.model) {
-      const parts = queryOptions.model.split("/");
-      if (parts.length === 2) {
-        modelConfig = { providerID: parts[0], modelID: parts[1] };
-      } else {
+      const [providerID, ...rest] = queryOptions.model.split("/");
+      if (providerID && rest.length > 0) {
+        modelConfig = { providerID, modelID: rest.join("/") };
+      }
+      if (!modelConfig) {
         modelConfig = { providerID: "default", modelID: queryOptions.model };
       }
     }
+
 
     const body = JSON.stringify({
       parts: parts as any,
