@@ -49,7 +49,9 @@ interface DebugTurn {
   timestamp: string;
   userPrompt: string;
   events: unknown[];
+  meta?: Record<string, unknown>;
 }
+
 
 /**
  * Service for interacting with OpenCode
@@ -527,6 +529,8 @@ export class OpenCodeService {
     const initialTimeout = 30000; // 30s to get first response
     const inactivityTimeout = 60000; // 60s between meaningful events
     let receivedMeaningfulEvent = false;
+    let emittedAssistantContent = false;
+
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     let isTimeoutTriggered = false;
     
@@ -561,6 +565,19 @@ export class OpenCodeService {
 
     // Debug: collect all events for this turn
     const debugEvents: unknown[] = [];
+    const debugStart = Date.now();
+    const debugMeta: Record<string, unknown> = {
+      serverUrl: this.serverUrl,
+      sessionId,
+      timeout: {
+        initialMs: initialTimeout,
+        inactivityMs: inactivityTimeout,
+      },
+    };
+    let promptStatus: number | null = null;
+    let promptError: string | null = null;
+    let firstEventType: string | null = null;
+
 
     // Start event subscription
     const eventStream = this.subscribeToEvents(abortSignal);
@@ -579,10 +596,12 @@ export class OpenCodeService {
     if (firstEvent.done) {
       throw new Error("Event stream closed unexpectedly");
     }
+    firstEventType = firstEvent.value?.type ?? null;
     if (firstEvent.value?.type !== "server.connected") {
       console.warn("[OpenCode] Expected server.connected, got:", firstEvent.value?.type);
     }
     debugEvents.push(firstEvent.value);
+
 
 
     // Build request body
@@ -629,6 +648,12 @@ export class OpenCodeService {
       }
     }
 
+    debugMeta.model = modelConfig ?? null;
+    debugMeta.conversationId = queryOptions?.conversationId ?? null;
+    debugMeta.allowedTools = queryOptions?.allowedTools ?? [];
+    debugMeta.mentionCount = queryOptions?.mentions?.length ?? 0;
+    debugMeta.mentionContextCount = queryOptions?.mentionContexts?.length ?? 0;
+
 
     const body = JSON.stringify({
       parts: parts as any,
@@ -650,6 +675,7 @@ export class OpenCodeService {
           },
         },
         (res) => {
+          promptStatus = res.statusCode ?? null;
           if (res.statusCode && res.statusCode >= 400) {
             reject(new Error(`Prompt failed with status ${res.statusCode}`));
           } else {
@@ -657,11 +683,15 @@ export class OpenCodeService {
           }
         }
       );
-      req.on("error", reject);
+      req.on("error", (error) => {
+        promptError = error instanceof Error ? error.message : String(error);
+        reject(error);
+      });
       abortSignal.addEventListener("abort", () => req.destroy());
       req.write(body);
       req.end();
     });
+
 
     try {
       // If the prompt request itself fails, we should abort the whole query
@@ -712,6 +742,7 @@ export class OpenCodeService {
           if (part.type === "text") {
             if (delta) {
               resetTimeout(); // Got meaningful content
+              emittedAssistantContent = true;
               yield { type: "text", content: delta };
             } else if (part.text) {
               // Fallback: if no delta, try to diff or just yield full text if it's a new chunk
@@ -746,6 +777,7 @@ export class OpenCodeService {
                 continue;
               }
               resetTimeout(); // Got meaningful content
+              emittedAssistantContent = true;
               yield {
                 type: "tool_use",
                 toolName: part.tool,
@@ -758,6 +790,7 @@ export class OpenCodeService {
             ) {
               completedTools.add(toolUseId);
               resetTimeout(); // Got meaningful content
+              emittedAssistantContent = true;
               yield {
                 type: "tool_result",
                 toolUseId,
@@ -769,6 +802,7 @@ export class OpenCodeService {
             ) {
               completedTools.add(toolUseId);
               resetTimeout(); // Got meaningful content
+              emittedAssistantContent = true;
               yield {
                 type: "tool_result",
                 toolUseId,
@@ -778,15 +812,18 @@ export class OpenCodeService {
           }
         }
 
+
         if (
           event.type === "session.error" &&
           event.properties?.sessionID === sessionId
         ) {
+          emittedAssistantContent = true;
           yield {
             type: "error",
             content: event.properties.error?.message || "Session error",
           };
         }
+
 
         if (event.type === "message.updated") {
           const info = event.properties?.info;
@@ -801,23 +838,44 @@ export class OpenCodeService {
       }
 
 
-      if (!isSessionIdle) {
-        const errorMsg = "Stream ended prematurely (no session.idle received)";
-        console.error(`[OpenCodeService] ${errorMsg}`);
-        throw new NetworkError(new Error(errorMsg));
-      }
+       if (!isSessionIdle) {
+         const errorMsg = "Stream ended prematurely (no session.idle received)";
+         console.error(`[OpenCodeService] ${errorMsg}`);
+         debugEvents.push({ type: "warning", message: errorMsg });
+         throw new NetworkError(new Error(errorMsg));
+       }
+
 
       await promptPromise;
-      
-      // Save debug turn
-       await this.saveDebugTurn(queryOptions?.conversationId ?? sessionId, {
-         timestamp: new Date().toISOString(),
-         userPrompt: prompt,
-         events: debugEvents,
-       });
 
-      
+      if (!emittedAssistantContent) {
+        debugEvents.push({
+          type: "warning",
+          message: "No assistant content emitted before done",
+        });
+      }
+
+      // Save debug turn
+      await this.saveDebugTurn(queryOptions?.conversationId ?? sessionId, {
+        timestamp: new Date().toISOString(),
+        userPrompt: prompt,
+        events: debugEvents,
+        meta: {
+          ...debugMeta,
+          durationMs: Date.now() - debugStart,
+          firstEventType,
+          promptStatus,
+          promptError,
+          emittedAssistantContent,
+          result: "ok",
+        },
+      });
+
+
+
       yield { type: "done" };
+
+
     } catch (error) {
       clearTimeoutHandler();
       
@@ -834,6 +892,7 @@ export class OpenCodeService {
         yield { type: "done" }; // Graceful exit
         return;
       }
+
 
       let finalError: OpencodianError;
       
@@ -863,12 +922,30 @@ export class OpenCodeService {
       
       console.error("[OpenCodeService] Yielding error to UI:", finalError.message);
       
+      if (!emittedAssistantContent) {
+        debugEvents.push({
+          type: "warning",
+          message: "No assistant content emitted before error",
+        });
+      }
+
       // Save debug turn even on error
       await this.saveDebugTurn(queryOptions?.conversationId ?? sessionId, {
         timestamp: new Date().toISOString(),
         userPrompt: prompt,
         events: [...debugEvents, { type: "error", error: finalError.message }],
+        meta: {
+          ...debugMeta,
+          durationMs: Date.now() - debugStart,
+          firstEventType,
+          promptStatus,
+          promptError,
+          emittedAssistantContent,
+          result: "error",
+          errorType: finalError.constructor.name,
+        },
       });
+
 
       
       yield {
