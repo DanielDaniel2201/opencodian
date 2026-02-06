@@ -1031,7 +1031,7 @@ export class OpencodianView extends ItemView {
         return;
       }
     } else {
-      this.plugin.agentService.resetSession();
+      this.plugin.agentService.setSessionId(null);
       conv.sessionId = null;
       await this.plugin.saveConversation(conv);
       await this.plugin.ensureConversationSession(conv);

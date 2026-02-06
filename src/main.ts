@@ -136,7 +136,7 @@ export default class OpencodianPlugin extends Plugin {
     this.conversations = await this.sessionStorage.listConversations();
     this.activeConversationId = conversation.id;
     this.activeConversation = conversation;
-    this.agentService.resetSession();
+    this.agentService.setSessionId(null);
 
     await this.saveSettings();
     return conversation;
@@ -200,7 +200,7 @@ export default class OpencodianPlugin extends Plugin {
 
     this.activeConversationId = conversationId;
     this.activeConversation = null;
-    this.agentService.resetSession();
+    this.agentService.setSessionId(null);
     await this.saveSettings();
   }
 
@@ -219,7 +219,7 @@ export default class OpencodianPlugin extends Plugin {
         return;
       }
 
-      this.agentService.resetSession();
+      this.agentService.setSessionId(null);
       await this.saveSettings();
       return;
     }

@@ -16,12 +16,11 @@ import path from "path";
 import { pathToFileURL } from "url";
 
 import type { ChatMessage, ImageAttachment, StreamChunk, ConfigProvidersResponse } from "../types";
-import { 
-  OpencodianError, 
-  UserCancellationError, 
-  TimeoutError, 
-  ServerError, 
-  NetworkError 
+import {
+  OpencodianError,
+  UserCancellationError,
+  ServerError,
+  NetworkError
 } from "../errors";
 
 export interface MentionContext {
@@ -52,6 +51,11 @@ type ToolAttachment = {
   mime?: string;
 };
 
+type BusEvent = {
+  type: string;
+  properties?: Record<string, unknown>;
+};
+
 
 type OpencodeClient = ReturnType<typeof createOpencodeClient>;
 
@@ -72,6 +76,9 @@ export class OpenCodeService {
   private sessionId: string | null = null;
   private sessionPermissionMode: "safe" | "yolo" = "yolo";
   private abortController: AbortController | null = null;
+  private eventAbort: AbortController | null = null;
+  private eventStarted: boolean = false;
+  private eventListeners = new Set<(event: BusEvent) => void>();
   private serverUrl: string = "http://localhost:4096";
   private serverClose: (() => void) | null = null;
   private initPromise: Promise<void> | null = null;
@@ -444,7 +451,7 @@ export class OpenCodeService {
   /**
    * Subscribe to global events via SSE
    */
-  private subscribeToEvents(abortSignal: AbortSignal): AsyncGenerator<any> {
+  private async streamEvents(abortSignal: AbortSignal): Promise<AsyncGenerator<BusEvent>> {
     const urlObj = new URL(`${this.serverUrl}/event`);
     const vaultDirectory = this.getVaultBasePath();
     if (vaultDirectory) {
@@ -477,27 +484,6 @@ export class OpenCodeService {
         }
       );
 
-      // Track connection errors
-      let connectionError: Error | null = null;
-      let isStreamEnded = false;
-      
-      response.on("error", (err) => {
-        console.error("[OpenCodeService] Event stream error:", err);
-        connectionError = new NetworkError(err);
-      });
-      
-      response.on("close", () => {
-        console.log("[OpenCodeService] Event stream closed", { aborted: abortSignal.aborted, hasError: !!connectionError, ended: isStreamEnded });
-        if (!abortSignal.aborted && !connectionError && !isStreamEnded) {
-          // Unexpected close - network might have dropped
-          connectionError = new NetworkError(new Error("Connection closed unexpectedly"));
-        }
-      });
-      
-      response.on("end", () => {
-        isStreamEnded = true;
-      });
-
       const rl = readline.createInterface({
         input: response,
         terminal: false,
@@ -506,21 +492,17 @@ export class OpenCodeService {
       let currentData = "";
 
       for await (const line of rl) {
-        // Check for abort or errors before processing each line
         if (abortSignal.aborted) {
-          console.log("[OpenCodeService] Stream aborted by signal");
           break;
         }
-        if (connectionError) {
-          console.error("[OpenCodeService] Throwing connection error:", connectionError);
-          throw connectionError;
-        }
-        
         const trimmed = line.trim();
         if (!trimmed) {
           if (currentData) {
             try {
-              yield JSON.parse(currentData);
+              const parsed = JSON.parse(currentData) as BusEvent;
+              if (parsed && typeof parsed.type === "string") {
+                yield parsed;
+              }
             } catch {
               // Ignore parse errors
             }
@@ -534,10 +516,6 @@ export class OpenCodeService {
         }
       }
       
-      // Check for connection error after loop ends
-      if (connectionError && !abortSignal.aborted) {
-        throw connectionError;
-      }
     })();
   }
 
@@ -563,45 +541,7 @@ export class OpenCodeService {
     }
     const abortSignal = this.abortController.signal;
     
-    // Timeout configuration
-    // - 30 seconds to receive first meaningful response
-    // - 60 seconds between meaningful events (text/tool updates)
-    const initialTimeout = 30000; // 30s to get first response
-    const inactivityTimeout = 60000; // 60s between meaningful events
-    let receivedMeaningfulEvent = false;
     let emittedAssistantContent = false;
-
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    let isTimeoutTriggered = false;
-    
-    const setTimeoutWithDuration = (duration: number): void => {
-      if (timeoutId) clearTimeout(timeoutId);
-      timeoutId = setTimeout(() => {
-        if (this.abortController) {
-          isTimeoutTriggered = true;
-          const msg = receivedMeaningfulEvent 
-            ? `No response for ${duration / 1000}s`
-            : `No initial response within ${duration / 1000}s`;
-          console.error(`[OpenCodeService] Query timed out: ${msg}`);
-          this.abortController.abort(new TimeoutError(duration, receivedMeaningfulEvent ? "inactivity" : "initial"));
-        }
-      }, duration);
-    };
-    
-    const resetTimeout = (): void => {
-      receivedMeaningfulEvent = true;
-      setTimeoutWithDuration(inactivityTimeout);
-    };
-    
-    const clearTimeoutHandler = (): void => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-        timeoutId = null;
-      }
-    };
-    
-    // Start initial timeout
-    setTimeoutWithDuration(initialTimeout);
 
     // Debug: collect all events for this turn
     const debugEvents: unknown[] = [];
@@ -609,38 +549,17 @@ export class OpenCodeService {
     const debugMeta: Record<string, unknown> = {
       serverUrl: this.serverUrl,
       sessionId,
-      timeout: {
-        initialMs: initialTimeout,
-        inactivityMs: inactivityTimeout,
-      },
     };
     let promptStatus: number | null = null;
     let promptError: string | null = null;
-    let firstEventType: string | null = null;
+    const firstEventType: string | null = null;
 
 
-    // Start event subscription
-    const eventStream = this.subscribeToEvents(abortSignal);
-
-    // Wait for server.connected before sending prompt.
-    // This CAN hang if the event stream never yields, so it must respect the abort signal.
-    const firstEvent = await Promise.race([
-      eventStream.next(),
-      new Promise<IteratorResult<any>>((_, reject) => {
-        abortSignal.addEventListener("abort", () => {
-          const reason = abortSignal.reason;
-          reject(reason instanceof Error ? reason : new Error("Aborted"));
-        });
-      }),
-    ]);
-    if (firstEvent.done) {
-      throw new Error("Event stream closed unexpectedly");
-    }
-    firstEventType = firstEvent.value?.type ?? null;
-    if (firstEvent.value?.type !== "server.connected") {
-      console.warn("[OpenCode] Expected server.connected, got:", firstEvent.value?.type);
-    }
-    debugEvents.push(firstEvent.value);
+    await this.ensureEventStream();
+    const eventStream = this.createEventIterator(
+      abortSignal,
+      (event) => this.isSessionEvent(event, sessionId),
+    );
 
 
 
@@ -707,56 +626,32 @@ export class OpenCodeService {
     debugMeta.filePartCount = parts.filter((part) => part.type === "file").length;
 
 
-    const body = JSON.stringify({
-      parts: parts as any,
-      ...(modelConfig && { model: modelConfig }),
-    });
-
-    // Send the prompt (async)
-    const promptPromise = new Promise<void>((resolve, reject) => {
-      const urlObj = new URL(
-        `${this.serverUrl}/session/${sessionId}/prompt_async`
-      );
-      const vaultDirectoryForPrompt = this.getVaultBasePath();
-      if (vaultDirectoryForPrompt) {
-        urlObj.searchParams.set("directory", vaultDirectoryForPrompt);
+    const promptPromise = (async () => {
+      if (!this.client) {
+        throw new Error("OpenCode client not initialized");
       }
-      const req = http.request(
-        urlObj,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(body).toString(),
-          },
-        },
-        (res) => {
-          promptStatus = res.statusCode ?? null;
-          if (res.statusCode && res.statusCode >= 400) {
-            reject(new Error(`Prompt failed with status ${res.statusCode}`));
-          } else {
-            resolve();
-          }
-        }
-      );
-      req.on("error", (error) => {
+      try {
+        await this.client.session.promptAsync({
+          sessionID: sessionId,
+          directory: this.getVaultBasePath() ?? undefined,
+          ...(modelConfig && { model: modelConfig }),
+          tools: queryOptions?.allowedTools
+            ? Object.fromEntries(queryOptions.allowedTools.map((tool) => [tool, true]))
+            : undefined,
+          parts: parts as any,
+        });
+        promptStatus = 204;
+      } catch (error) {
         promptError = error instanceof Error ? error.message : String(error);
-        reject(error);
-      });
-      abortSignal.addEventListener("abort", () => req.destroy());
-      req.write(body);
-      req.end();
-    });
+        throw error;
+      }
+    })();
 
 
     try {
-      // If the prompt request itself fails, we should abort the whole query
-      // so the UI can show an error instead of hanging forever.
+      // If the prompt request itself fails, surface it in the error handler below.
       promptPromise.catch((err) => {
         console.error("[OpenCode] Prompt error:", err);
-        if (this.abortController && !abortSignal.aborted) {
-          this.abortController.abort(new ServerError(500, err instanceof Error ? err.message : String(err)));
-        }
       });
 
        // Track seen tool calls to avoid duplicates
@@ -782,43 +677,41 @@ export class OpenCodeService {
         debugEvents.push(event);
 
         // Session idle means we're done
-         if (
-           event.type === "session.idle" &&
-           event.properties?.sessionID === sessionId
-         ) {
-           isSessionIdle = true;
-           break;
-         }
+        if (event.type === "session.idle") {
+          isSessionIdle = true;
+          break;
+        }
 
-         if (event.type === "permission.asked") {
-           const permission = event.properties as
-             | {
-                 id: string;
-                 sessionID: string;
-                 permission: string;
-                 patterns: string[];
-                 always: string[];
-                 metadata?: Record<string, unknown>;
-               }
-             | undefined;
-           if (!permission || permission.sessionID !== sessionId) {
-             continue;
-           }
-           yield {
-             type: "permission_request",
-             request: permission,
-           };
-           continue;
-         }
+        if (event.type === "permission.asked") {
+          const permission = event.properties as
+            | {
+                id: string;
+                sessionID: string;
+                permission: string;
+                patterns: string[];
+                always: string[];
+                metadata?: Record<string, unknown>;
+              }
+            | undefined;
+          if (!permission) {
+            continue;
+          }
+          yield {
+            type: "permission_request",
+            request: permission,
+          };
+          continue;
+        }
 
-         if (event.type === "message.part.updated") {
-          const { part, delta } = event.properties;
-          if (part.sessionID !== sessionId) continue;
+        if (event.type === "message.part.updated") {
+          const eventProps = event.properties ?? {};
+          const part = eventProps.part as Record<string, unknown> | undefined;
+          const delta = eventProps.delta as string | undefined;
+          if (!part) continue;
 
           // Handle streaming text deltas
           if (part.type === "text") {
             if (delta) {
-              resetTimeout(); // Got meaningful content
               emittedAssistantContent = true;
               yield { type: "text", content: delta };
             } else if (part.text) {
@@ -837,38 +730,35 @@ export class OpenCodeService {
             }
           }
           // Handle tool use
-           else if (part.type === "tool") {
-            const state = part.state || {};
-            const toolUseId = part.id;
+          else if (part.type === "tool") {
+            const state = (part.state ?? {}) as Record<string, unknown>;
+            const toolUseId = part.id as string | undefined;
+            if (!toolUseId) continue;
 
             const input = (state.input || {}) as Record<string, unknown>;
             const hasNonEmptyInput =
               !!input &&
               typeof input === "object" &&
               Object.keys(input).length > 0;
+            const status = state.status as string | undefined;
 
-            if (state.status === "running" || state.status === "pending") {
+            if (status === "running" || status === "pending") {
               // OpenCode sometimes emits an initial `pending` tool update with empty input `{}`.
               // Emitting it creates a duplicate UI block that never gets completed.
-              if (state.status === "pending" && !hasNonEmptyInput) {
+              if (status === "pending" && !hasNonEmptyInput) {
                 continue;
               }
-              resetTimeout(); // Got meaningful content
               emittedAssistantContent = true;
               yield {
                 type: "tool_use",
-                toolName: part.tool,
+                toolName: (part.tool as string) || "tool",
                 input,
                 toolUseId,
               };
-             } else if (
-               state.status === "completed" &&
-               !completedTools.has(toolUseId)
-             ) {
+            } else if (status === "completed" && !completedTools.has(toolUseId)) {
               completedTools.add(toolUseId);
-              resetTimeout(); // Got meaningful content
               emittedAssistantContent = true;
-              const output = state.output;
+              const output = state.output as unknown;
               let outputText = "";
               let attachments: ToolAttachment[] | undefined;
               if (typeof output === "string") {
@@ -887,29 +777,22 @@ export class OpenCodeService {
                 result: outputText,
                 attachments,
               };
-            } else if (
-              state.status === "error" &&
-              !completedTools.has(toolUseId)
-            ) {
+            } else if (status === "error" && !completedTools.has(toolUseId)) {
               completedTools.add(toolUseId);
-              resetTimeout(); // Got meaningful content
               emittedAssistantContent = true;
               yield {
                 type: "tool_result",
                 toolUseId,
-                result: `Error: ${state.error}`,
+                result: `Error: ${state.error as string}`,
               };
             }
           }
         }
 
 
-        if (
-          event.type === "session.error" &&
-          event.properties?.sessionID === sessionId
-        ) {
+        if (event.type === "session.error") {
           emittedAssistantContent = true;
-          const error = event.properties.error as
+          const error = event.properties?.error as
             | { name?: string; data?: { message?: string } }
             | undefined;
           const errorMessage =
@@ -924,24 +807,23 @@ export class OpenCodeService {
 
 
         if (event.type === "message.updated") {
-          const info = event.properties?.info;
-          if (info?.sessionID === sessionId && info?.id && info?.role) {
+          const info = event.properties?.info as Record<string, unknown> | undefined;
+          if (info?.id && info?.role) {
             yield {
               type: "server_message",
-              role: info.role,
-              messageId: info.id,
+              role: info.role as "user" | "assistant",
+              messageId: info.id as string,
             };
           }
         }
       }
 
 
-       if (!isSessionIdle) {
-         const errorMsg = "Stream ended prematurely (no session.idle received)";
-         console.error(`[OpenCodeService] ${errorMsg}`);
-         debugEvents.push({ type: "warning", message: errorMsg });
-         throw new NetworkError(new Error(errorMsg));
-       }
+        if (!isSessionIdle) {
+          const errorMsg = "Stream ended before session.idle";
+          console.warn(`[OpenCodeService] ${errorMsg}`);
+          debugEvents.push({ type: "warning", message: errorMsg });
+        }
 
 
       await promptPromise;
@@ -975,12 +857,9 @@ export class OpenCodeService {
 
 
     } catch (error) {
-      clearTimeoutHandler();
-      
       console.error("[OpenCodeService] Query error:", {
         errorType: error?.constructor?.name,
         message: error instanceof Error ? error.message : String(error),
-        isTimeout: isTimeoutTriggered,
         isUserCancellation: error instanceof UserCancellationError,
       });
       
@@ -996,11 +875,6 @@ export class OpenCodeService {
       
       if (error instanceof OpencodianError) {
         finalError = error;
-      } else if (isTimeoutTriggered) {
-        finalError = new TimeoutError(
-          receivedMeaningfulEvent ? inactivityTimeout : initialTimeout, 
-          receivedMeaningfulEvent ? "inactivity" : "initial"
-        );
       } else {
         // Map native errors to OpencodianErrors with user-friendly messages
         const msg = String(error);
@@ -1010,6 +884,8 @@ export class OpenCodeService {
           finalError = new NetworkError(new Error("Cannot connect to OpenCode server"));
         } else if (msg.includes("ETIMEDOUT") || msg.includes("timeout")) {
           finalError = new NetworkError(new Error("Connection timed out"));
+        } else if (msg.includes("aborted")) {
+          finalError = new ServerError(499, "Request aborted");
         } else if (msg.includes("Network") || msg.includes("Connection closed")) {
           finalError = new NetworkError(new Error("Network connection lost"));
         } else {
@@ -1020,12 +896,12 @@ export class OpenCodeService {
       
       console.error("[OpenCodeService] Yielding error to UI:", finalError.message);
       
-      if (!emittedAssistantContent) {
-        debugEvents.push({
-          type: "warning",
-          message: "No assistant content emitted before error",
-        });
-      }
+       if (!emittedAssistantContent) {
+         debugEvents.push({
+           type: "warning",
+           message: "No assistant content emitted before error",
+         });
+       }
 
       // Save debug turn even on error
       await this.saveDebugTurn(queryOptions?.conversationId ?? sessionId, {
@@ -1052,7 +928,6 @@ export class OpenCodeService {
       };
       yield { type: "done" };
     } finally {
-      clearTimeoutHandler();
       this.abortController = null;
     }
   }
@@ -1064,17 +939,129 @@ export class OpenCodeService {
     if (this.abortController) {
       this.abortController.abort(new UserCancellationError());
     }
+  }
 
-    if (this.client && this.sessionId) {
-      try {
-        await this.client.session.abort({
-          sessionID: this.sessionId,
-          directory: this.getVaultBasePath() ?? undefined,
-        });
-      } catch {
-        // Ignore
-      }
+  private emitEvent(event: BusEvent): void {
+    for (const listener of this.eventListeners) {
+      listener(event);
     }
+  }
+
+  private async ensureEventStream(): Promise<void> {
+    await this.init();
+    if (this.eventStarted) return;
+    this.eventStarted = true;
+
+    const abort = new AbortController();
+    this.eventAbort = abort;
+    const signal = abort.signal;
+
+    (async () => {
+      while (!signal.aborted) {
+        const stream = this.streamEvents(signal).catch(() => null);
+        const events = await stream;
+        if (!events) {
+          await this.sleep(250);
+          continue;
+        }
+
+        for await (const event of events) {
+          this.emitEvent(event);
+        }
+
+        if (!signal.aborted) {
+          await this.sleep(250);
+        }
+      }
+    })().catch((error) => {
+      console.error("[OpenCodeService] Event stream error:", error);
+    });
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, ms));
+  }
+
+  private createEventIterator(
+    abortSignal: AbortSignal,
+    filter?: (event: BusEvent) => boolean,
+  ): AsyncGenerator<BusEvent> {
+    const queue: BusEvent[] = [];
+    let resolveNext: ((value: IteratorResult<BusEvent>) => void) | null = null;
+
+    const onEvent = (event: BusEvent) => {
+      if (filter && !filter(event)) return;
+      if (resolveNext) {
+        const resolve = resolveNext;
+        resolveNext = null;
+        resolve({ value: event, done: false });
+        return;
+      }
+      queue.push(event);
+    };
+
+    this.eventListeners.add(onEvent);
+
+    const waitForNext = () =>
+      new Promise<IteratorResult<BusEvent>>((resolve) => {
+        resolveNext = resolve;
+      });
+
+    const waitForAbort = () =>
+      new Promise<IteratorResult<BusEvent>>((resolve) => {
+        abortSignal.addEventListener(
+          "abort",
+          () => resolve({ value: undefined as unknown as BusEvent, done: true }),
+          { once: true },
+        );
+      });
+
+    return (async function* () {
+      try {
+        while (true) {
+          if (abortSignal.aborted) return;
+          if (queue.length > 0) {
+            yield queue.shift() as BusEvent;
+            continue;
+          }
+
+          const next = await Promise.race([waitForNext(), waitForAbort()]);
+          if (next.done) return;
+          yield next.value;
+        }
+      } finally {
+        this.eventListeners.delete(onEvent);
+      }
+    }).call(this);
+  }
+
+  private isSessionEvent(event: BusEvent, sessionId: string): boolean {
+    const props = event.properties ?? {};
+    if (event.type === "session.updated") {
+      const info = props.info as Record<string, unknown> | undefined;
+      return info?.id === sessionId;
+    }
+    if (event.type === "message.updated") {
+      const info = props.info as Record<string, unknown> | undefined;
+      return info?.sessionID === sessionId;
+    }
+    if (event.type === "message.part.updated") {
+      const part = props.part as Record<string, unknown> | undefined;
+      return part?.sessionID === sessionId;
+    }
+    if (event.type === "permission.asked") {
+      return props.sessionID === sessionId;
+    }
+    if (event.type === "session.status") {
+      return props.sessionID === sessionId;
+    }
+    if (event.type === "session.idle") {
+      return props.sessionID === sessionId;
+    }
+    if (event.type === "session.error") {
+      return props.sessionID === sessionId;
+    }
+    return false;
   }
 
   async ensureSessionId(permissionMode?: "yolo" | "safe"): Promise<string> {
@@ -1133,6 +1120,11 @@ export class OpenCodeService {
   cleanup(): void {
     this.cancel();
     this.resetSession();
+    if (this.eventAbort) {
+      this.eventAbort.abort();
+      this.eventAbort = null;
+    }
+    this.eventStarted = false;
     if (this.serverClose) {
       this.serverClose();
       this.serverClose = null;
