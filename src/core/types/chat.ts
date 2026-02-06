@@ -108,9 +108,25 @@ export interface ConversationMeta {
 export type StreamChunk =
   | { type: 'text'; content: string }
   | { type: 'tool_use'; toolName: string; input: Record<string, unknown>; toolUseId: string }
-  | { type: 'tool_result'; toolUseId: string; result: string }
+  | { type: 'tool_result'; toolUseId: string; result: string; attachments?: ToolAttachment[] }
   | { type: 'thinking'; content: string }
   | { type: 'error'; content: string }
+  | { type: 'permission_request'; request: PermissionRequest }
   | { type: 'server_message'; role: 'user' | 'assistant'; messageId: string }
   | { type: 'done' };
+
+export interface ToolAttachment {
+  url: string;
+  filename?: string;
+  mime?: string;
+}
+
+export interface PermissionRequest {
+  id: string;
+  sessionID: string;
+  permission: string;
+  patterns: string[];
+  always: string[];
+  metadata?: Record<string, unknown>;
+}
 

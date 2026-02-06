@@ -9,6 +9,7 @@ import {
   MarkdownRenderer,
   TFolder,
   Notice,
+  Modal,
 } from "obsidian";
 
 import type OpencodianPlugin from "../../main";
@@ -673,18 +674,19 @@ export class OpencodianView extends ItemView {
       // Initial loading indicator?
       // contentEl.innerHTML = '<span class="loading-dots">...</span>';
 
-      for await (const chunk of this.plugin.agentService.query(
-        text,
-        undefined,
-        conv?.messages,
+        for await (const chunk of this.plugin.agentService.query(
+          text,
+          undefined,
+          conv?.messages,
 
-        {
-          model: this.plugin.settings.model,
-          mentionContexts:
-            mentionContexts.length > 0 ? mentionContexts : undefined,
-          allowedTools: skillsFinal?.map((s) => s.name),
-          conversationId: conv?.id ?? undefined,
-        },
+          {
+            model: this.plugin.settings.model,
+            permissionMode: this.plugin.settings.permissionMode,
+            mentionContexts:
+              mentionContexts.length > 0 ? mentionContexts : undefined,
+            allowedTools: skillsFinal?.map((s) => s.name),
+            conversationId: conv?.id ?? undefined,
+          },
 
       )) {
         if (chunk.type === "server_message") {
@@ -774,14 +776,44 @@ export class OpencodianView extends ItemView {
 
           const existing = toolItemsById.get(chunk.toolUseId);
           if (existing && existing.type === "tool") {
-            existing.result = chunk.result;
+            const attachmentInfo = chunk.attachments && chunk.attachments.length > 0
+              ? `\n\nAttachments: ${chunk.attachments
+                  .map((attachment) => attachment.filename || attachment.url)
+                  .join(", ")}`
+              : "";
+            existing.result = `${chunk.result}${attachmentInfo}`.trim();
             existing.status = chunk.result.trim().startsWith("Error:")
               ? "error"
               : "done";
           }
 
-          this.renderToolResultBlock(chunk.toolUseId, chunk.result);
+          const attachmentInfo = chunk.attachments && chunk.attachments.length > 0
+            ? `\n\nAttachments: ${chunk.attachments
+                .map((attachment) => attachment.filename || attachment.url)
+                .join(", ")}`
+            : "";
+          this.renderToolResultBlock(
+            chunk.toolUseId,
+            `${chunk.result}${attachmentInfo}`.trim(),
+          );
           this.scrollToBottom();
+          continue;
+        }
+
+        if (chunk.type === "permission_request") {
+          clearWorking();
+          if (this.plugin.settings.permissionMode === "yolo") {
+            await this.plugin.agentService.replyToPermission(
+              chunk.request.id,
+              "always",
+            );
+            continue;
+          }
+          const decision = await this.requestToolApproval(chunk.request);
+          await this.plugin.agentService.replyToPermission(
+            chunk.request.id,
+            decision,
+          );
           continue;
         }
 
@@ -1083,16 +1115,17 @@ export class OpencodianView extends ItemView {
         await this.renderMarkdown(last.text, activeTextEl);
       };
 
-      for await (const chunk of this.plugin.agentService.query(
-        text,
-        undefined,
-        conv.messages,
-        {
-          model: this.plugin.settings.model,
-          conversationId: conv.id,
-        },
+        for await (const chunk of this.plugin.agentService.query(
+          text,
+          undefined,
+          conv.messages,
+          {
+            model: this.plugin.settings.model,
+            permissionMode: this.plugin.settings.permissionMode,
+            conversationId: conv.id,
+          },
 
-      )) {
+        )) {
         if (chunk.type === "server_message") {
           if (chunk.role === "user") {
             if (pendingServerUserId && pendingServerUserId !== chunk.messageId) {
@@ -1176,14 +1209,44 @@ export class OpencodianView extends ItemView {
 
           const existing = toolItemsById.get(chunk.toolUseId);
           if (existing) {
-            existing.result = chunk.result;
+            const attachmentInfo = chunk.attachments && chunk.attachments.length > 0
+              ? `\n\nAttachments: ${chunk.attachments
+                  .map((attachment) => attachment.filename || attachment.url)
+                  .join(", ")}`
+              : "";
+            existing.result = `${chunk.result}${attachmentInfo}`.trim();
             existing.status = chunk.result.trim().startsWith("Error:")
               ? "error"
               : "done";
           }
 
-          this.renderToolResultBlock(chunk.toolUseId, chunk.result);
+          const attachmentInfo = chunk.attachments && chunk.attachments.length > 0
+            ? `\n\nAttachments: ${chunk.attachments
+                .map((attachment) => attachment.filename || attachment.url)
+                .join(", ")}`
+            : "";
+          this.renderToolResultBlock(
+            chunk.toolUseId,
+            `${chunk.result}${attachmentInfo}`.trim(),
+          );
           this.scrollToBottom();
+          continue;
+        }
+
+        if (chunk.type === "permission_request") {
+          clearWorking();
+          if (this.plugin.settings.permissionMode === "yolo") {
+            await this.plugin.agentService.replyToPermission(
+              chunk.request.id,
+              "always",
+            );
+            continue;
+          }
+          const decision = await this.requestToolApproval(chunk.request);
+          await this.plugin.agentService.replyToPermission(
+            chunk.request.id,
+            decision,
+          );
           continue;
         }
 
@@ -1806,6 +1869,67 @@ export class OpencodianView extends ItemView {
   private addSystemMessage(content: string): void {
     const msgEl = this.messagesEl.createDiv({ cls: "message message-system" });
     msgEl.textContent = content;
+  }
+
+  private async requestToolApproval(request: {
+    id: string;
+    sessionID: string;
+    permission: string;
+    patterns: string[];
+    always: string[];
+    metadata?: Record<string, unknown>;
+  }): Promise<"once" | "always" | "reject"> {
+    const label = request.permission || "tool";
+    const patterns = request.patterns && request.patterns.length > 0
+      ? request.patterns.join(", ")
+      : "*";
+    const alwaysLabel = request.always && request.always.length > 0
+      ? request.always.join(", ")
+      : patterns;
+
+    return new Promise((resolve) => {
+      const modal = new Modal(this.plugin.app);
+      modal.setTitle("Permission required");
+
+      const info = modal.contentEl.createDiv({ cls: "opencodian-permission-info" });
+      info.createDiv({
+        text: `Tool: ${label}`,
+        cls: "opencodian-permission-tool",
+      });
+      info.createDiv({
+        text: `Patterns: ${patterns}`,
+        cls: "opencodian-permission-patterns",
+      });
+
+      const buttons = modal.contentEl.createDiv({ cls: "opencodian-permission-actions" });
+      const allowOnce = buttons.createEl("button", {
+        text: "Allow once",
+        cls: "opencodian-permission-btn opencodian-permission-allow",
+      });
+      const allowAlways = buttons.createEl("button", {
+        text: `Always allow: ${alwaysLabel}`,
+        cls: "opencodian-permission-btn opencodian-permission-allow-always",
+      });
+      const reject = buttons.createEl("button", {
+        text: "Reject",
+        cls: "opencodian-permission-btn opencodian-permission-reject",
+      });
+
+      const resolveOnce = (decision: "once" | "always" | "reject") => {
+        resolve(decision);
+        modal.close();
+      };
+
+      allowOnce.addEventListener("click", () => resolveOnce("once"));
+      allowAlways.addEventListener("click", () => resolveOnce("always"));
+      reject.addEventListener("click", () => resolveOnce("reject"));
+
+      modal.onClose = () => {
+        resolve("reject");
+      };
+
+      modal.open();
+    });
   }
 
   private addUserMessageActions(

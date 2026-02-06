@@ -47,6 +47,7 @@ export interface ProviderModel {
   cost?: ModelCost;
   limit?: {
     context: number;
+    input?: number;
     output: number;
   };
   status?: "alpha" | "beta" | "deprecated" | "active";

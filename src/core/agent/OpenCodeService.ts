@@ -6,7 +6,7 @@
  * Supports streaming responses, file context, and session management.
  */
 
-import { createOpencodeClient } from "@opencode-ai/sdk/client";
+import { createOpencodeClient } from "@opencode-ai/sdk/v2";
 import type { App } from "obsidian";
 
 import { spawn } from "child_process";
@@ -35,6 +35,7 @@ export interface MentionContext {
 export interface QueryOptions {
   model?: string;
   allowedTools?: string[];
+  permissionMode?: "yolo" | "safe";
   /** File/folder paths mentioned with @ syntax */
   mentions?: string[];
   /** Rich mention context with folder contents */
@@ -44,6 +45,12 @@ export interface QueryOptions {
   /** Timeout in milliseconds for the entire query (default: 120000 = 2 minutes) */
   timeout?: number;
 }
+
+type ToolAttachment = {
+  url: string;
+  filename?: string;
+  mime?: string;
+};
 
 
 type OpencodeClient = ReturnType<typeof createOpencodeClient>;
@@ -63,6 +70,7 @@ interface DebugTurn {
 export class OpenCodeService {
   private client: OpencodeClient | null = null;
   private sessionId: string | null = null;
+  private sessionPermissionMode: "safe" | "yolo" = "yolo";
   private abortController: AbortController | null = null;
   private serverUrl: string = "http://localhost:4096";
   private serverClose: (() => void) | null = null;
@@ -195,9 +203,9 @@ export class OpenCodeService {
             urlObj,
             {
               method,
-              headers: requestHeaders,
-              timeout: 10000, // 10s timeout
-            },
+            headers: requestHeaders,
+            timeout: 10000, // 10s timeout
+          },
             (res) => {
               console.log(
                 `[OpenCodeService] Response received: ${res.statusCode}`
@@ -265,9 +273,8 @@ export class OpenCodeService {
         cwd: vaultDirectory ?? undefined,
       });
 
-      // Don't pass directory to SDK - it puts it in HTTP headers which breaks for non-ASCII paths.
-      // The server is already started with cwd set to the vault directory.
-      this.client = this.createClient(server.url);
+      // Pass directory to SDK (query param) for SSE + APIs that expect it.
+      this.client = this.createClient(server.url, vaultDirectory);
       this.serverUrl = server.url;
       this.serverClose = () => server.close();
 
@@ -401,7 +408,23 @@ export class OpenCodeService {
 
     try {
       const session = await this.client.session.create({
-        body: { title: `Obsidian - ${new Date().toLocaleString()}` },
+        title: `Obsidian - ${new Date().toLocaleString()}`,
+        permission: this.sessionPermissionMode === "safe"
+          ? [
+              {
+                permission: "*",
+                action: "ask",
+                pattern: "*",
+              },
+            ]
+          : [
+              {
+                permission: "*",
+                action: "allow",
+                pattern: "*",
+              },
+            ],
+        directory: this.getVaultBasePath() ?? undefined,
       });
 
       if (session.data?.id) {
@@ -423,6 +446,10 @@ export class OpenCodeService {
    */
   private subscribeToEvents(abortSignal: AbortSignal): AsyncGenerator<any> {
     const urlObj = new URL(`${this.serverUrl}/event`);
+    const vaultDirectory = this.getVaultBasePath();
+    if (vaultDirectory) {
+      urlObj.searchParams.set("directory", vaultDirectory);
+    }
 
     return (async function* () {
       const response = await new Promise<http.IncomingMessage>(
@@ -524,7 +551,16 @@ export class OpenCodeService {
     queryOptions?: QueryOptions
   ): AsyncGenerator<StreamChunk> {
     this.abortController = new AbortController();
-    const sessionId = await this.ensureSession();
+    const previousPermissionMode = this.sessionPermissionMode;
+    if (queryOptions?.permissionMode) {
+      this.sessionPermissionMode = queryOptions.permissionMode;
+    }
+    let sessionId: string;
+    try {
+      sessionId = await this.ensureSession();
+    } finally {
+      this.sessionPermissionMode = previousPermissionMode;
+    }
     const abortSignal = this.abortController.signal;
     
     // Timeout configuration
@@ -681,6 +717,10 @@ export class OpenCodeService {
       const urlObj = new URL(
         `${this.serverUrl}/session/${sessionId}/prompt_async`
       );
+      const vaultDirectoryForPrompt = this.getVaultBasePath();
+      if (vaultDirectoryForPrompt) {
+        urlObj.searchParams.set("directory", vaultDirectoryForPrompt);
+      }
       const req = http.request(
         urlObj,
         {
@@ -719,9 +759,9 @@ export class OpenCodeService {
         }
       });
 
-      // Track seen tool calls to avoid duplicates
-      const completedTools = new Set<string>();
-      let isSessionIdle = false;
+       // Track seen tool calls to avoid duplicates
+       const completedTools = new Set<string>();
+       let isSessionIdle = false;
 
       for await (const event of eventStream) {
         // Check for abort signal with detailed logging
@@ -742,15 +782,36 @@ export class OpenCodeService {
         debugEvents.push(event);
 
         // Session idle means we're done
-        if (
-          event.type === "session.idle" &&
-          event.properties?.sessionID === sessionId
-        ) {
-          isSessionIdle = true;
-          break;
-        }
+         if (
+           event.type === "session.idle" &&
+           event.properties?.sessionID === sessionId
+         ) {
+           isSessionIdle = true;
+           break;
+         }
 
-        if (event.type === "message.part.updated") {
+         if (event.type === "permission.asked") {
+           const permission = event.properties as
+             | {
+                 id: string;
+                 sessionID: string;
+                 permission: string;
+                 patterns: string[];
+                 always: string[];
+                 metadata?: Record<string, unknown>;
+               }
+             | undefined;
+           if (!permission || permission.sessionID !== sessionId) {
+             continue;
+           }
+           yield {
+             type: "permission_request",
+             request: permission,
+           };
+           continue;
+         }
+
+         if (event.type === "message.part.updated") {
           const { part, delta } = event.properties;
           if (part.sessionID !== sessionId) continue;
 
@@ -776,7 +837,7 @@ export class OpenCodeService {
             }
           }
           // Handle tool use
-          else if (part.type === "tool") {
+           else if (part.type === "tool") {
             const state = part.state || {};
             const toolUseId = part.id;
 
@@ -800,17 +861,31 @@ export class OpenCodeService {
                 input,
                 toolUseId,
               };
-            } else if (
-              state.status === "completed" &&
-              !completedTools.has(toolUseId)
-            ) {
+             } else if (
+               state.status === "completed" &&
+               !completedTools.has(toolUseId)
+             ) {
               completedTools.add(toolUseId);
               resetTimeout(); // Got meaningful content
               emittedAssistantContent = true;
+              const output = state.output;
+              let outputText = "";
+              let attachments: ToolAttachment[] | undefined;
+              if (typeof output === "string") {
+                outputText = output;
+              } else if (output && typeof output === "object") {
+                const outputObject = output as {
+                  text?: string;
+                  attachments?: ToolAttachment[];
+                };
+                outputText = outputObject.text ?? "";
+                attachments = outputObject.attachments;
+              }
               yield {
                 type: "tool_result",
                 toolUseId,
-                result: state.output || "",
+                result: outputText,
+                attachments,
               };
             } else if (
               state.status === "error" &&
@@ -834,9 +909,16 @@ export class OpenCodeService {
           event.properties?.sessionID === sessionId
         ) {
           emittedAssistantContent = true;
+          const error = event.properties.error as
+            | { name?: string; data?: { message?: string } }
+            | undefined;
+          const errorMessage =
+            error?.data?.message ||
+            error?.name ||
+            "Session error";
           yield {
             type: "error",
-            content: event.properties.error?.message || "Session error",
+            content: errorMessage,
           };
         }
 
@@ -986,7 +1068,8 @@ export class OpenCodeService {
     if (this.client && this.sessionId) {
       try {
         await this.client.session.abort({
-          path: { id: this.sessionId },
+          sessionID: this.sessionId,
+          directory: this.getVaultBasePath() ?? undefined,
         });
       } catch {
         // Ignore
@@ -994,7 +1077,10 @@ export class OpenCodeService {
     }
   }
 
-  async ensureSessionId(): Promise<string> {
+  async ensureSessionId(permissionMode?: "yolo" | "safe"): Promise<string> {
+    if (permissionMode) {
+      this.sessionPermissionMode = permissionMode;
+    }
     return this.ensureSession();
   }
 
@@ -1009,8 +1095,25 @@ export class OpenCodeService {
 
     const sessionId = await this.ensureSession();
     await this.client.session.revert({
-      path: { id: sessionId },
-      body: { messageID: messageId },
+      sessionID: sessionId,
+      directory: this.getVaultBasePath() ?? undefined,
+      messageID: messageId,
+    });
+  }
+
+  async replyToPermission(requestId: string, response: "once" | "always" | "reject"): Promise<void> {
+    if (!this.client) {
+      await this.init();
+    }
+
+    if (!this.client) {
+      throw new Error("OpenCode client not initialized");
+    }
+
+    await this.client.permission.reply({
+      requestID: requestId,
+      reply: response,
+      directory: this.getVaultBasePath() ?? undefined,
     });
   }
 

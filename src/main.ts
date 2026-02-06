@@ -182,7 +182,9 @@ export default class OpencodianPlugin extends Plugin {
   async ensureConversationSession(conversation: Conversation): Promise<void> {
     if (conversation.sessionId) return;
 
-    const sessionId = await this.agentService.ensureSessionId();
+    const sessionId = await this.agentService.ensureSessionId(
+      this.settings.permissionMode,
+    );
     conversation.sessionId = sessionId;
     await this.sessionStorage.saveConversation(conversation);
 
