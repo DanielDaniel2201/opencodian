@@ -137,10 +137,10 @@ export class OpencodianSettingTab extends PluginSettingTab {
     // OpenCode path
     new Setting(containerEl)
       .setName("OpenCode CLI path")
-      .setDesc("Custom path to OpenCode CLI. Leave empty for auto-detection.")
+      .setDesc("Full path to OpenCode CLI. Auto-detected if left empty. Only set manually if auto-detection fails.")
       .addText((text) => {
         text
-          .setPlaceholder("/usr/local/bin/opencode")
+          .setPlaceholder("Auto-detected")
           .setValue(this.plugin.settings.opencodePath)
           .onChange(async (value) => {
             this.plugin.settings.opencodePath = value.trim();

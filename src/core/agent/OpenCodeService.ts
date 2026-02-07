@@ -9,7 +9,7 @@
 import { createOpencodeClient } from "@opencode-ai/sdk/v2";
 import type { App } from "obsidian";
 
-import { spawn } from "child_process";
+import { spawn, exec } from "child_process";
 import * as http from "http";
 import * as readline from "readline";
 import path from "path";
@@ -82,7 +82,8 @@ export class OpenCodeService {
   private serverUrl: string = "http://localhost:4096";
   private serverClose: (() => void) | null = null;
   private initPromise: Promise<void> | null = null;
-  
+  private opencodePath: string = "opencode";
+
   // Debug logging
   private app: App | null = null;
   private debugEnabled: boolean = true;
@@ -101,6 +102,110 @@ export class OpenCodeService {
   /** Enable/disable debug logging */
   setDebugEnabled(enabled: boolean): void {
     this.debugEnabled = enabled;
+  }
+
+  /** Set OpenCode CLI path (for custom installations) */
+  setOpencodePath(path: string): void {
+    this.opencodePath = path || "opencode";
+  }
+
+  /**
+   * Auto-detect OpenCode CLI path using shell commands.
+   * Tries common locations first, then runs system commands.
+   */
+  async detectOpencodePath(): Promise<string | null> {
+    const platform = process.platform;
+
+    console.log(`[OpenCodeService] Auto-detecting opencode on platform: ${platform}`);
+
+    // Try common npm global paths first
+    const commonPaths = platform === "win32" ? [
+      `${process.env.APPDATA}\\npm\\opencode.cmd`,
+      `${process.env.LOCALAPPDATA}\\Programs\\opencode\\opencode.exe`,
+      `C:\\Users\\${process.env.USERNAME}\\AppData\\Roaming\\npm\\opencode.cmd`,
+      `C:\\Program Files\\nodejs\\opencode.cmd`,
+      `C:\\Program Files\\opencode\\opencode.exe`,
+    ] : [
+      `${process.env.HOME}/.npm-global/bin/opencode`,
+      `${process.env.HOME}/.local/bin/opencode`,
+      `/usr/local/bin/opencode`,
+      `/usr/bin/opencode`,
+      `/opt/homebrew/bin/opencode`,
+    ];
+
+    for (const testPath of commonPaths) {
+      if (testPath && await this.fileExists(testPath)) {
+        console.log(`[OpenCodeService] Found opencode at common path: ${testPath}`);
+        return testPath;
+      }
+    }
+
+    const commands: string[] = [];
+
+    if (platform === "win32") {
+      commands.push(
+        "where opencode",
+        "cmd /c where opencode"
+      );
+    } else {
+      commands.push(
+        "which opencode",
+        "command -v opencode"
+      );
+    }
+
+    for (const cmd of commands) {
+      console.log(`[OpenCodeService] Trying detection command: ${cmd}`);
+      try {
+        const result = await new Promise<string>((resolve, reject) => {
+          exec(cmd, { timeout: 5000 }, (error, stdout, stderr) => {
+            if (error) {
+              console.log(`[OpenCodeService] Command failed: ${cmd} - ${error.message}`);
+              reject(error);
+            } else {
+              resolve(stdout.trim());
+            }
+          });
+        });
+
+        if (result && result.length > 0 && !result.includes("not found") && !result.includes("Could not find")) {
+          let detectedPath = result.split("\n")[0].trim();
+
+          // On Windows, check for proper executable extension
+          if (platform === "win32" && !detectedPath.match(/\.(exe|cmd|bat)$/i)) {
+            const extensions = [".cmd", ".exe", ".bat"];
+            for (const ext of extensions) {
+              const testPath = detectedPath + ext;
+              if (await this.fileExists(testPath)) {
+                detectedPath = testPath;
+                break;
+              }
+            }
+          }
+
+          console.log(`[OpenCodeService] Auto-detected opencode at: ${detectedPath}`);
+          return detectedPath;
+        }
+      } catch {
+        // Try next command
+      }
+    }
+
+    console.log("[OpenCodeService] Could not auto-detect opencode path");
+    return null;
+  }
+
+  /**
+   * Check if a file exists
+   */
+  private async fileExists(filePath: string): Promise<boolean> {
+    try {
+      const fs = await import("fs");
+      fs.accessSync(filePath, fs.constants.F_OK);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Save a turn to debug file */
@@ -322,11 +427,28 @@ export class OpenCodeService {
       `--port=${options.port}`,
     ];
 
-    const proc = spawn("opencode", args, {
+    let opencodeCmd = this.opencodePath || "opencode";
+
+    // Try auto-detect if using default command
+    if (opencodeCmd === "opencode") {
+      console.log("[OpenCodeService] Path not set, trying auto-detection...");
+      const detected = await this.detectOpencodePath();
+      if (detected) {
+        opencodeCmd = detected;
+        this.opencodePath = detected;
+        console.log(`[OpenCodeService] Using auto-detected path: ${opencodeCmd}`);
+      }
+    }
+
+    console.log(`[OpenCodeService] Spawning OpenCode CLI: ${opencodeCmd} ${args.join(" ")}`);
+
+    const isCmdFile = process.platform === "win32" && opencodeCmd.match(/\.(cmd|bat|ps1)$/i);
+    const proc = spawn(opencodeCmd, args, {
       cwd: options.cwd,
       env: {
         ...process.env,
       },
+      shell: isCmdFile ? true : false,
     });
 
     const url = await new Promise<string>((resolve, reject) => {
@@ -341,7 +463,9 @@ export class OpenCodeService {
       let output = "";
 
       const onData = (chunk: any) => {
-        output += chunk?.toString?.() ?? "";
+        const text = chunk?.toString?.() ?? "";
+        output += text;
+        console.log(`[OpenCodeService] Server output: ${text.trim()}`);
         const lines = output.split("\n");
         for (const line of lines) {
           if (line.startsWith("opencode server listening")) {
@@ -1150,6 +1274,7 @@ export class OpenCodeService {
 
     return new Promise<ConfigProvidersResponse>((resolve, reject) => {
       const urlObj = new URL(`${this.serverUrl}/config/providers`);
+      console.log(`[OpenCodeService] Fetching providers from: ${urlObj.toString()}`);
 
       const req = http.request(
         urlObj,
@@ -1166,6 +1291,7 @@ export class OpenCodeService {
           res.on("end", () => {
             const buffer = Buffer.concat(chunks);
             const responseText = buffer.toString("utf-8");
+            console.log(`[OpenCodeService] Providers response (${res.statusCode}):`, responseText);
 
             if (res.statusCode && res.statusCode >= 400) {
               reject(new Error(`Failed to fetch providers: ${res.statusCode}`));
@@ -1174,6 +1300,7 @@ export class OpenCodeService {
 
             try {
               const data = JSON.parse(responseText) as ConfigProvidersResponse;
+              console.log(`[OpenCodeService] Parsed providers:`, JSON.stringify(data, null, 2));
               resolve(data);
             } catch {
               reject(new Error("Failed to parse provider response"));

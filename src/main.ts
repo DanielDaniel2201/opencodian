@@ -31,6 +31,37 @@ export default class OpencodianPlugin extends Plugin {
     this.agentService = new OpenCodeService();
     this.agentService.setApp(this.app);
 
+    // Auto-detect opencode path if not set
+    if (!this.settings.opencodePath) {
+      console.log("[Opencodian] OpenCode path not set, attempting auto-detection...");
+      const detectedPath = await this.agentService.detectOpencodePath();
+      if (detectedPath) {
+        this.settings.opencodePath = detectedPath;
+        await this.saveSettings();
+        console.log(`[Opencodian] Auto-detected opencode path: ${detectedPath}`);
+      } else {
+        console.warn("[Opencodian] Failed to auto-detect opencode path. Please set it manually in settings.");
+      }
+    } else {
+      // Validate existing path - fix missing extension on Windows
+      const platform = process.platform;
+      let path = this.settings.opencodePath;
+      if (platform === "win32" && !path.match(/\.(exe|cmd|bat|ps1)$/i)) {
+        // Try adding .cmd extension
+        const fixedPath = path + ".cmd";
+        const fs = require("fs");
+        if (fs.existsSync(fixedPath)) {
+          console.log(`[Opencodian] Fixed path: ${path} -> ${fixedPath}`);
+          path = fixedPath;
+          this.settings.opencodePath = path;
+          await this.saveSettings();
+        }
+      }
+      console.log(`[Opencodian] Using configured opencode path: ${path}`);
+    }
+
+    this.agentService.setOpencodePath(this.settings.opencodePath);
+
     // Register view
     this.registerView(
       VIEW_TYPE_OPENCODIAN,
