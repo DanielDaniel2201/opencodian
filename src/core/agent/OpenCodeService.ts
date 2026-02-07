@@ -328,9 +328,13 @@ export class OpenCodeService {
                 const buffer = Buffer.concat(chunks);
                 const responseText = buffer.toString("utf-8");
 
+                // Handle null body status codes (204, 205, 304)
+                const statusCode = res.statusCode || 200;
+                const isNullBodyStatus = statusCode === 204 || statusCode === 205 || statusCode === 304;
+
                 // Construct a standard Response object
-                const response = new Response(responseText, {
-                  status: res.statusCode || 200,
+                const response = new Response(isNullBodyStatus ? null : responseText, {
+                  status: statusCode,
                   statusText: res.statusMessage || "",
                   headers: res.headers as any,
                 });
