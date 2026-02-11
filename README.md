@@ -8,7 +8,34 @@ Opencodian is an Obsidian plugin that embeds OpenCode as a sidebar chat interfac
 
 ## Prerequisites
 
-Before using Opencodian, you must have [OpenCode](https://github.com/sst/opencode) installed on your system. Follow the [OpenCode installation guide](https://opencode.ai/docs/installation) to set it up.
+Opencodian ships with a dedicated OpenCode runtime and does not use any system-wide OpenCode installation.
+
+To start successfully, the plugin must contain:
+
+1. **Bundled OpenCode binary** (platform-specific)
+   - Windows: `.obsidian/plugins/opencodian/bin/win/opencode.exe`
+   - macOS: `.obsidian/plugins/opencodian/bin/mac/opencode`
+   - Linux: `.obsidian/plugins/opencodian/bin/linux/opencode`
+
+2. **Plugin-local OpenCode config directory**
+   - `.obsidian/plugins/opencodian/.opencode/opencode.json` or `.obsidian/plugins/opencodian/.opencode/opencode.jsonc`
+
+If any of these files are missing, Opencodian will refuse to start the server and prompt you to review the prerequisites.
+
+### OpenCode config format and location
+
+OpenCode supports **JSON** and **JSONC** config. See the official docs for format and schema:
+- https://opencode.ai/docs/config
+
+Opencodian uses a **plugin-local config directory** instead of the default global/project locations. It sets `OPENCODE_CONFIG_DIR` to `.obsidian/plugins/opencodian/.opencode` and disables project config discovery so your vault is not scanned.
+
+### OpenCode binary source
+
+The bundled runtime is pinned to OpenCode `v0.15.29` from the `v1` branch in the reference repository. Use the OpenCode release artifacts for that version and place the binary in the paths above.
+
+You can find official install and release information here:
+- https://opencode.ai/docs
+- https://github.com/anomalyco/opencode/releases
 
 ## Features
 
