@@ -35,3 +35,9 @@ npm-debug.log*
 DEVELOPMENT.md
 QUICKSTART.md
 link-to-vault.bat
+
+# Local debug output (should not be committed)
+opencodian-debug.json
+
+# Local OpenCode config/cache
+.opencode/
