@@ -260,10 +260,12 @@ export class OpenCodeService {
               res.on("end", () => {
                 const buffer = Buffer.concat(chunks);
                 const responseText = buffer.toString("utf-8");
+                const status = res.statusCode || 200;
+                const nullBody = status === 204 || status === 205 || status === 304;
 
                 // Construct a standard Response object
-                const response = new Response(responseText, {
-                  status: res.statusCode || 200,
+                const response = new Response(nullBody ? null : responseText, {
+                  status,
                   statusText: res.statusMessage || "",
                   headers: res.headers as any,
                 });
@@ -1086,11 +1088,23 @@ export class OpenCodeService {
         if (event.type === "message.updated") {
           const info = event.properties?.info as Record<string, unknown> | undefined;
           if (info?.id && info?.role) {
+            const role = info.role as "user" | "assistant";
             yield {
               type: "server_message",
-              role: info.role as "user" | "assistant",
+              role,
               messageId: info.id as string,
             };
+
+            const finish = typeof info.finish === "string" ? info.finish : null;
+            if (
+              role === "assistant" &&
+              finish &&
+              finish !== "tool-calls" &&
+              finish !== "unknown"
+            ) {
+              isSessionIdle = true;
+              break;
+            }
           }
         }
       }
