@@ -1164,6 +1164,14 @@
   opacity: 0.8;
 }
 
+.opencodian-welcome-subline {
+  font-size: 12px;
+  font-weight: 400;
+  margin: 6px 0 0 0;
+  color: var(--text-faint);
+  opacity: 0.9;
+}
+
 
 /* ========== FILE MENTION SYSTEM ========== */
 

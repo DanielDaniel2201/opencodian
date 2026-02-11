@@ -413,12 +413,16 @@ export class OpencodianView extends ItemView {
       }
 
       // Old conversations are intentionally not supported.
-      if (msg.role === "assistant" && (!msg.items || msg.items.length === 0)) {
-        this.addErrorMessage(
-          "This conversation was created by an older Opencodian version and cannot be displayed.",
-        );
-        continue;
-      }
+        if (
+          msg.role === "assistant" &&
+          (!msg.items || msg.items.length === 0) &&
+          !msg.error
+        ) {
+          this.addErrorMessage(
+            "This conversation was created by an older Opencodian version and cannot be displayed.",
+          );
+          continue;
+        }
 
       if (msg.role === "user") {
         this.addMessage(
@@ -560,12 +564,12 @@ export class OpencodianView extends ItemView {
     // Set generating state
     this.setGeneratingState(true);
 
-     // Clear welcome message if present
-     this.clearWelcomeMessage();
+    // Clear welcome message if present
+    this.clearWelcomeMessage();
 
-     if (this.plugin.settings.activeConversationId) {
-       await this.plugin.loadConversation(this.plugin.settings.activeConversationId);
-     }
+    if (this.plugin.settings.activeConversationId) {
+      await this.plugin.loadConversation(this.plugin.settings.activeConversationId);
+    }
 
 
     // Save to conversation
@@ -674,19 +678,19 @@ export class OpencodianView extends ItemView {
       // Initial loading indicator?
       // contentEl.innerHTML = '<span class="loading-dots">...</span>';
 
-        for await (const chunk of this.plugin.agentService.query(
-          text,
-          undefined,
-          conv?.messages,
+      for await (const chunk of this.plugin.agentService.query(
+        text,
+        undefined,
+        conv?.messages,
 
-          {
-            model: this.plugin.settings.model,
-            permissionMode: this.plugin.settings.permissionMode,
-            mentionContexts:
-              mentionContexts.length > 0 ? mentionContexts : undefined,
-            allowedTools: skillsFinal?.map((s) => s.name),
-            conversationId: conv?.id ?? undefined,
-          },
+        {
+          model: this.plugin.settings.model,
+          permissionMode: this.plugin.settings.permissionMode,
+          mentionContexts:
+            mentionContexts.length > 0 ? mentionContexts : undefined,
+          allowedTools: skillsFinal?.map((s) => s.name),
+          conversationId: conv?.id ?? undefined,
+        },
 
       )) {
         if (chunk.type === "server_message") {
@@ -878,40 +882,7 @@ export class OpencodianView extends ItemView {
                 timestamp: Date.now(),
               });
               await this.plugin.saveConversation(conv);
-              continue;
-            }
-
-            conv.messages.push({
-              id: this.createMessageId(),
-              role: "assistant",
-              type: "message",
-              items,
-              timestamp: Date.now(),
-            });
-            await this.plugin.saveConversation(conv);
-          }
-
-
-          if (conv) {
-            if (pendingServerUserId) {
-              const lastUser = [...conv.messages]
-                .reverse()
-                .find((m): m is Conversation["messages"][number] => m.role === "user");
-              if (lastUser && !lastUser.serverId) {
-                lastUser.serverId = pendingServerUserId;
-              }
-              pendingServerUserId = null;
-            }
-
-            if (items.length === 0) {
-              conv.messages.push({
-                id: this.createMessageId(),
-                role: "assistant",
-                type: "message",
-                error: "No response received. Please try again.",
-                timestamp: Date.now(),
-              });
-              await this.plugin.saveConversation(conv);
+              this.setGeneratingState(false);
               continue;
             }
 
@@ -1115,17 +1086,17 @@ export class OpencodianView extends ItemView {
         await this.renderMarkdown(last.text, activeTextEl);
       };
 
-        for await (const chunk of this.plugin.agentService.query(
-          text,
-          undefined,
-          conv.messages,
-          {
-            model: this.plugin.settings.model,
-            permissionMode: this.plugin.settings.permissionMode,
-            conversationId: conv.id,
-          },
+      for await (const chunk of this.plugin.agentService.query(
+        text,
+        undefined,
+        conv.messages,
+        {
+          model: this.plugin.settings.model,
+          permissionMode: this.plugin.settings.permissionMode,
+          conversationId: conv.id,
+        },
 
-        )) {
+      )) {
         if (chunk.type === "server_message") {
           if (chunk.role === "user") {
             if (pendingServerUserId && pendingServerUserId !== chunk.messageId) {
@@ -2098,6 +2069,10 @@ export class OpencodianView extends ItemView {
     welcomeEl.createDiv({
       text: "Opencodian",
       cls: "opencodian-welcome-line",
+    });
+    welcomeEl.createDiv({
+      text: "Copy your opencode.json into .obsidian/plugins/opencodian/.opencode",
+      cls: "opencodian-welcome-subline",
     });
   }
 

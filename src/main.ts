@@ -27,9 +27,18 @@ export default class OpencodianPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
 
+    const rawPort = this.settings.opencodePort;
+    if (typeof rawPort !== "number" || !Number.isFinite(rawPort) || rawPort <= 0) {
+      this.settings.opencodePort = DEFAULT_SETTINGS.opencodePort;
+      await this.saveData(this.settings);
+    }
+
     // Initialize OpenCode service
     this.agentService = new OpenCodeService();
     this.agentService.setApp(this.app);
+    this.agentService.setDebugEnabled(this.settings.debugLogging);
+    this.agentService.setServerPort(this.settings.opencodePort);
+    this.agentService.setEnvironmentVariables(this.settings.environmentVariables);
 
     // Register view
     this.registerView(
@@ -112,6 +121,9 @@ export default class OpencodianPlugin extends Plugin {
   async saveSettings() {
     this.settings.activeConversationId = this.activeConversationId;
     await this.saveData(this.settings);
+    this.agentService.setDebugEnabled(this.settings.debugLogging);
+    this.agentService.setServerPort(this.settings.opencodePort);
+    this.agentService.setEnvironmentVariables(this.settings.environmentVariables);
   }
 
   /** Create a new conversation */

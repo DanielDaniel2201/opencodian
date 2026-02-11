@@ -27,8 +27,8 @@ export interface OpencodianSettings {
   // Excluded tags (notes with these tags won't be auto-loaded)
   excludedTags: string[];
 
-  // OpenCode CLI path (optional, for custom installations)
-  opencodePath: string;
+  // OpenCode server port
+  opencodePort: number;
 
   // Debugging
   debugLogging: boolean;
@@ -43,7 +43,7 @@ export const DEFAULT_SETTINGS: OpencodianSettings = {
   environmentVariables: "",
   systemPrompt: "",
   excludedTags: [],
-  opencodePath: "",
+  opencodePort: 4097,
   debugLogging: false,
 };
 

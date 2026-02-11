@@ -12,10 +12,17 @@ import type { App } from "obsidian";
 import { spawn } from "child_process";
 import * as http from "http";
 import * as readline from "readline";
+import * as fs from "fs";
+import * as net from "net";
 import path from "path";
 import { pathToFileURL } from "url";
 
-import type { ChatMessage, ImageAttachment, StreamChunk, ConfigProvidersResponse } from "../types";
+import type {
+  ChatMessage,
+  ImageAttachment,
+  StreamChunk,
+  ConfigProvidersResponse,
+} from "../types";
 import {
   OpencodianError,
   UserCancellationError,
@@ -79,7 +86,8 @@ export class OpenCodeService {
   private eventAbort: AbortController | null = null;
   private eventStarted: boolean = false;
   private eventListeners = new Set<(event: BusEvent) => void>();
-  private serverUrl: string = "http://localhost:4096";
+  private serverPort: number = 4097;
+  private serverUrl: string = "http://127.0.0.1:4097";
   private serverClose: (() => void) | null = null;
   private initPromise: Promise<void> | null = null;
   
@@ -87,6 +95,7 @@ export class OpenCodeService {
   private app: App | null = null;
   private debugEnabled: boolean = true;
   private readonly DEBUG_SESSIONS_PATH = ".obsidian/plugins/opencodian/sessions-debug";
+  private environmentVariables: string = "";
 
 
   constructor() {
@@ -98,9 +107,34 @@ export class OpenCodeService {
     this.app = app;
   }
 
+  setEnvironmentVariables(envText: string): void {
+    if (this.environmentVariables === envText) return;
+    this.environmentVariables = envText;
+    if (this.serverClose) {
+      this.serverClose();
+      this.serverClose = null;
+    }
+    this.client = null;
+    this.initPromise = null;
+  }
+
   /** Enable/disable debug logging */
   setDebugEnabled(enabled: boolean): void {
     this.debugEnabled = enabled;
+  }
+
+  setServerPort(port: number): void {
+    if (!Number.isFinite(port) || port <= 0) return;
+    const nextPort = Math.floor(port);
+    if (this.serverPort === nextPort) return;
+    if (this.serverClose) {
+      this.serverClose();
+      this.serverClose = null;
+    }
+    this.serverPort = nextPort;
+    this.serverUrl = `http://127.0.0.1:${nextPort}`;
+    this.client = null;
+    this.initPromise = null;
   }
 
   /** Save a turn to debug file */
@@ -269,13 +303,19 @@ export class OpenCodeService {
     const vaultDirectory = this.getVaultBasePath();
 
     try {
-      // Start our own server using a RANDOM port (port 0) so we can control cwd.
+      this.assertBundledRuntime();
+      if (this.serverPort === 4096) {
+        console.warn(
+          "[OpenCodeService] Port 4096 is reserved for default OpenCode installations. Consider using 4097.",
+        );
+      }
+      await this.assertPortAvailable("127.0.0.1", this.serverPort);
       console.log(
-        "[OpenCodeService] Starting a new OpenCode server on a random port..."
+        `[OpenCodeService] Starting bundled OpenCode server on port ${this.serverPort}...`
       );
       const server = await this.startOpencodeServer({
         hostname: "127.0.0.1",
-        port: 0,
+        port: this.serverPort,
         timeoutMs: 15000,
         cwd: vaultDirectory ?? undefined,
       });
@@ -322,53 +362,20 @@ export class OpenCodeService {
       `--port=${options.port}`,
     ];
 
-    const proc = spawn("opencode", args, {
+    const binaryPath = this.resolveBundledBinaryPath();
+    if (!fs.existsSync(binaryPath)) {
+      throw new Error(
+        `Bundled OpenCode binary not found at ${binaryPath}. Please reinstall the plugin.`,
+      );
+    }
+    const env = this.buildServerEnv();
+    const proc = spawn(binaryPath, args, {
       cwd: options.cwd,
-      env: {
-        ...process.env,
-      },
+      env,
     });
 
-    const url = await new Promise<string>((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        reject(
-          new Error(
-            `Timeout waiting for OpenCode server to start after ${options.timeoutMs}ms`
-          )
-        );
-      }, options.timeoutMs);
-
-      let output = "";
-
-      const onData = (chunk: any) => {
-        output += chunk?.toString?.() ?? "";
-        const lines = output.split("\n");
-        for (const line of lines) {
-          if (line.startsWith("opencode server listening")) {
-            const match = line.match(/on\s+(https?:\/\/[^\s]+)/);
-            if (!match) continue;
-            clearTimeout(timeoutId);
-            resolve(match[1]);
-            return;
-          }
-        }
-      };
-
-      proc.stdout?.on("data", onData);
-      proc.stderr?.on("data", onData);
-
-      proc.on("exit", (code) => {
-        clearTimeout(timeoutId);
-        let msg = `OpenCode server exited with code ${code}`;
-        if (output.trim()) msg += `\nServer output: ${output}`;
-        reject(new Error(msg));
-      });
-
-      proc.on("error", (error) => {
-        clearTimeout(timeoutId);
-        reject(error);
-      });
-    });
+    const url = `http://${options.hostname}:${options.port}`;
+    await this.waitForHealth(url, options.timeoutMs, proc);
 
     return {
       url,
@@ -376,6 +383,205 @@ export class OpenCodeService {
         proc.kill();
       },
     };
+  }
+
+  private assertBundledRuntime(): void {
+    const binaryPath = this.resolveBundledBinaryPath();
+    if (!fs.existsSync(binaryPath)) {
+      throw new Error(
+        `Missing bundled OpenCode binary at ${binaryPath}. Please see README prerequisites.`,
+      );
+    }
+    this.assertConfigDirExists();
+  }
+
+  private resolveBundledBinaryPath(): string {
+    const basePath = this.getVaultBasePath();
+    if (!basePath) {
+      throw new Error("Vault path unavailable. Cannot resolve bundled OpenCode binary.");
+    }
+    const baseDir = path.join(basePath, ".obsidian", "plugins", "opencodian", "bin");
+    const platform = process.platform;
+    if (platform === "win32") {
+      return path.join(baseDir, "win", "opencode.exe");
+    }
+    if (platform === "darwin") {
+      return path.join(baseDir, "mac", "opencode");
+    }
+    if (platform === "linux") {
+      return path.join(baseDir, "linux", "opencode");
+    }
+    throw new Error(`Unsupported platform: ${platform}`);
+  }
+
+  private getPluginConfigDir(): string {
+    const basePath = this.getVaultBasePath();
+    if (!basePath) {
+      throw new Error("Vault path unavailable. Cannot resolve OpenCode config directory.");
+    }
+    return path.join(
+      basePath,
+      ".obsidian",
+      "plugins",
+      "opencodian",
+      ".opencode",
+    );
+  }
+
+  private assertConfigDirExists(): void {
+    const dir = this.getPluginConfigDir();
+    if (!fs.existsSync(dir)) {
+      throw new Error(
+        `Missing OpenCode config directory at ${dir}. Please see README prerequisites.`,
+      );
+    }
+  }
+
+  private buildServerEnv(): Record<string, string> {
+    this.assertConfigDirExists();
+    const configDir = this.getPluginConfigDir();
+    const pluginRoot = path.dirname(configDir);
+    const xdgConfigHome = path.join(configDir, "xdg");
+    const baseEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (typeof value === "string") {
+        baseEnv[key] = value;
+      }
+    }
+    delete baseEnv.OPENCODE_CONFIG;
+    delete baseEnv.OPENCODE_CONFIG_CONTENT;
+
+    const customEnv = this.parseEnvironmentVariables(this.environmentVariables);
+    delete customEnv.OPENCODE_CONFIG;
+    delete customEnv.OPENCODE_CONFIG_CONTENT;
+    delete customEnv.OPENCODE_CONFIG_DIR;
+
+    const env: Record<string, string> = {
+      ...baseEnv,
+      ...customEnv,
+      OPENCODE_CONFIG_DIR: configDir,
+      OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+      OPENCODE_DISABLE_AUTOUPDATE: "1",
+      OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
+      OPENCODE_DISABLE_FILETIME_CHECK: "1",
+      OPENCODE_DISABLE_CLAUDE_CODE: "1",
+      OPENCODE_CLIENT: "opencodian",
+      OPENCODE_TEST_HOME: pluginRoot,
+      XDG_CONFIG_HOME: xdgConfigHome,
+    };
+    if (this.debugEnabled) {
+      env.OPENCODE_LOG_LEVEL = "debug";
+    }
+
+    return env;
+  }
+
+  private parseEnvironmentVariables(input: string): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const line of input.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eqIndex = trimmed.indexOf("=");
+      if (eqIndex <= 0) continue;
+      const key = trimmed.substring(0, eqIndex).trim();
+      let value = trimmed.substring(eqIndex + 1).trim();
+      if (
+        (value.startsWith("\"") && value.endsWith("\"")) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      if (key) {
+        result[key] = value;
+      }
+    }
+    return result;
+  }
+
+  private async assertPortAvailable(hostname: string, port: number): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const server = net.createServer();
+      const onError = (error: NodeJS.ErrnoException) => {
+        const code = error.code;
+        if (code === "EADDRINUSE" || code === "EACCES") {
+          reject(
+            new Error(
+              `OpenCode port ${port} is unavailable. Change the OpenCode server port in settings.`,
+            ),
+          );
+          return;
+        }
+        reject(error);
+      };
+      server.once("error", onError);
+      server.once("listening", () => {
+        server.close(() => resolve());
+      });
+      server.listen(port, hostname);
+    });
+  }
+
+  private async waitForHealth(
+    baseUrl: string,
+    timeoutMs: number,
+    proc: ReturnType<typeof spawn>,
+  ): Promise<void> {
+    const healthUrl = `${baseUrl}/global/health`;
+    const timeoutAt = Date.now() + timeoutMs;
+
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        proc.removeListener("exit", onExit);
+        proc.removeListener("error", onError);
+      };
+      const onExit = (code: number | null) => {
+        cleanup();
+        reject(new Error(`OpenCode server exited with code ${code ?? "unknown"}`));
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      proc.once("exit", onExit);
+      proc.once("error", onError);
+
+      const tick = () => {
+        if (Date.now() > timeoutAt) {
+          cleanup();
+          reject(
+            new Error(
+              `Timeout waiting for OpenCode server to be healthy after ${timeoutMs}ms`,
+            ),
+          );
+          return;
+        }
+
+        const req = http.request(
+          healthUrl,
+          { method: "GET", timeout: 2000 },
+          (res) => {
+            res.resume();
+            if (res.statusCode && res.statusCode < 400) {
+              cleanup();
+              resolve();
+              return;
+            }
+            setTimeout(tick, 250);
+          },
+        );
+
+        req.on("timeout", () => {
+          req.destroy();
+          setTimeout(tick, 250);
+        });
+        req.on("error", () => {
+          setTimeout(tick, 250);
+        });
+        req.end();
+      };
+
+      tick();
+    });
   }
 
   /**
@@ -680,6 +886,14 @@ export class OpenCodeService {
         if (event.type === "session.idle") {
           isSessionIdle = true;
           break;
+        }
+
+        if (event.type === "session.status") {
+          const status = event.properties?.status as { type?: string } | undefined;
+          if (status?.type === "idle") {
+            isSessionIdle = true;
+            break;
+          }
         }
 
         if (event.type === "permission.asked") {
@@ -1043,7 +1257,9 @@ export class OpenCodeService {
     }
     if (event.type === "message.updated") {
       const info = props.info as Record<string, unknown> | undefined;
-      return info?.sessionID === sessionId;
+      const infoSession = info?.sessionID as string | undefined;
+      const infoId = info?.id as string | undefined;
+      return infoSession === sessionId || infoId === sessionId;
     }
     if (event.type === "message.part.updated") {
       const part = props.part as Record<string, unknown> | undefined;

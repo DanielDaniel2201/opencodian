@@ -116,8 +116,16 @@ export class OpencodianSettingTab extends PluginSettingTab {
         text.inputEl.addClass("opencodian-settings-env-textarea");
       });
 
+    new Setting(containerEl)
+      .setName("Environment variable changes")
+      .setDesc("Changes apply after restarting the plugin.");
+
     // ========== Advanced Section ==========
     new Setting(containerEl).setName("Advanced").setHeading();
+
+    new Setting(containerEl)
+      .setName("OpenCode config location")
+      .setDesc("Copy your opencode.json into .obsidian/plugins/opencodian/.opencode");
 
     // Debug logging
     new Setting(containerEl)
@@ -134,16 +142,17 @@ export class OpencodianSettingTab extends PluginSettingTab {
           })
       );
 
-    // OpenCode path
     new Setting(containerEl)
-      .setName("OpenCode CLI path")
-      .setDesc("Custom path to OpenCode CLI. Leave empty for auto-detection.")
+      .setName("OpenCode server port")
+      .setDesc("Port for the bundled OpenCode server. Default is 4097.")
       .addText((text) => {
         text
-          .setPlaceholder("/usr/local/bin/opencode")
-          .setValue(this.plugin.settings.opencodePath)
+          .setPlaceholder("4097")
+          .setValue(String(this.plugin.settings.opencodePort))
           .onChange(async (value) => {
-            this.plugin.settings.opencodePath = value.trim();
+            const parsed = Number.parseInt(value, 10);
+            if (Number.isNaN(parsed) || parsed <= 0) return;
+            this.plugin.settings.opencodePort = parsed;
             await this.plugin.saveSettings();
           });
         text.inputEl.style.width = "100%";
