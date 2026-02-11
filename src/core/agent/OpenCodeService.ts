@@ -304,18 +304,26 @@ export class OpenCodeService {
 
     try {
       this.assertBundledRuntime();
+      const configDir = this.getPluginConfigDir();
+      console.log(`[OpenCodeService] Using OpenCode config dir: ${configDir}`);
       if (this.serverPort === 4096) {
         console.warn(
           "[OpenCodeService] Port 4096 is reserved for default OpenCode installations. Consider using 4097.",
         );
       }
-      await this.assertPortAvailable("127.0.0.1", this.serverPort);
+      const configuredPort = this.serverPort;
+      const resolvedPort = await this.resolveServerPort("127.0.0.1", configuredPort);
+      if (resolvedPort.fallback) {
+        console.warn(
+          `[OpenCodeService] Port ${configuredPort} is unavailable. Using ${resolvedPort.port} for this session.`,
+        );
+      }
       console.log(
-        `[OpenCodeService] Starting bundled OpenCode server on port ${this.serverPort}...`
+        `[OpenCodeService] Starting bundled OpenCode server on port ${resolvedPort.port}...`
       );
       const server = await this.startOpencodeServer({
         hostname: "127.0.0.1",
-        port: this.serverPort,
+        port: resolvedPort.port,
         timeoutMs: 15000,
         cwd: vaultDirectory ?? undefined,
       });
@@ -498,26 +506,52 @@ export class OpenCodeService {
     return result;
   }
 
-  private async assertPortAvailable(hostname: string, port: number): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
+  private async resolveServerPort(
+    hostname: string,
+    preferredPort: number,
+  ): Promise<{ port: number; fallback: boolean }> {
+    const available = await this.isPortAvailable(hostname, preferredPort);
+    if (available) {
+      return { port: preferredPort, fallback: false };
+    }
+    const port = await this.getEphemeralPort(hostname);
+    return { port, fallback: true };
+  }
+
+  private async isPortAvailable(hostname: string, port: number): Promise<boolean> {
+    return new Promise<boolean>((resolve, reject) => {
       const server = net.createServer();
       const onError = (error: NodeJS.ErrnoException) => {
         const code = error.code;
         if (code === "EADDRINUSE" || code === "EACCES") {
-          reject(
-            new Error(
-              `OpenCode port ${port} is unavailable. Change the OpenCode server port in settings.`,
-            ),
-          );
+          resolve(false);
           return;
         }
         reject(error);
       };
       server.once("error", onError);
       server.once("listening", () => {
-        server.close(() => resolve());
+        server.close(() => resolve(true));
       });
       server.listen(port, hostname);
+    });
+  }
+
+  private async getEphemeralPort(hostname: string): Promise<number> {
+    return new Promise<number>((resolve, reject) => {
+      const server = net.createServer();
+      const onError = (error: NodeJS.ErrnoException) => {
+        reject(error);
+      };
+      server.once("error", onError);
+      server.listen(0, hostname, () => {
+        const address = server.address();
+        if (!address || typeof address === "string") {
+          server.close(() => reject(new Error("Failed to acquire random port")));
+          return;
+        }
+        server.close(() => resolve(address.port));
+      });
     });
   }
 
