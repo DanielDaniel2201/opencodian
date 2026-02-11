@@ -31,7 +31,7 @@ Opencodian uses a **plugin-local config directory** instead of the default globa
 
 ### OpenCode binary source
 
-The bundled runtime is pinned to OpenCode `v0.15.29` from the `v1` branch in the reference repository. Use the OpenCode release artifacts for that version and place the binary in the paths above.
+The bundled runtime is pinned to OpenCode `v1.1.56` from the reference repository tag. Use the OpenCode release artifacts for that version and place the binary in the paths above.
 
 You can find official install and release information here:
 - https://opencode.ai/docs

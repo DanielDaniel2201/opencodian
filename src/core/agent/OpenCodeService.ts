@@ -922,6 +922,7 @@ export class OpenCodeService {
           const part = eventProps.part as Record<string, unknown> | undefined;
           const delta = eventProps.delta as string | undefined;
           if (!part) continue;
+          const callID = part.callID as string | undefined;
 
           // Handle streaming text deltas
           if (part.type === "text") {
@@ -946,7 +947,7 @@ export class OpenCodeService {
           // Handle tool use
           else if (part.type === "tool") {
             const state = (part.state ?? {}) as Record<string, unknown>;
-            const toolUseId = part.id as string | undefined;
+            const toolUseId = callID ?? (part.id as string | undefined);
             if (!toolUseId) continue;
 
             const input = (state.input || {}) as Record<string, unknown>;
@@ -977,7 +978,8 @@ export class OpenCodeService {
               let attachments: ToolAttachment[] | undefined;
               if (typeof output === "string") {
                 outputText = output;
-              } else if (output && typeof output === "object") {
+              }
+              if (output && typeof output === "object") {
                 const outputObject = output as {
                   text?: string;
                   attachments?: ToolAttachment[];
@@ -985,11 +987,34 @@ export class OpenCodeService {
                 outputText = outputObject.text ?? "";
                 attachments = outputObject.attachments;
               }
+              const toToolAttachment = (attachment: unknown): ToolAttachment | null => {
+                if (!attachment || typeof attachment !== "object") return null;
+                const record = attachment as Record<string, unknown>;
+                const url = typeof record.url === "string" ? record.url : null;
+                if (!url) return null;
+                const filename =
+                  typeof record.filename === "string" ? record.filename : undefined;
+                const mime = typeof record.mime === "string" ? record.mime : undefined;
+                return {
+                  url,
+                  filename,
+                  mime,
+                };
+              };
+              const attachmentsFromState = Array.isArray(state.attachments)
+                ? (state.attachments as unknown[])
+                    .map(toToolAttachment)
+                    .filter((attachment): attachment is ToolAttachment => attachment !== null)
+                : undefined;
+              const resolvedAttachments =
+                attachmentsFromState && attachmentsFromState.length > 0
+                  ? attachmentsFromState
+                  : attachments;
               yield {
                 type: "tool_result",
                 toolUseId,
                 result: outputText,
-                attachments,
+                attachments: resolvedAttachments,
               };
             } else if (status === "error" && !completedTools.has(toolUseId)) {
               completedTools.add(toolUseId);
