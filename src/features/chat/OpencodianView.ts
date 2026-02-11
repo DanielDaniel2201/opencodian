@@ -711,15 +711,15 @@ export class OpencodianView extends ItemView {
         },
 
       )) {
-        if (chunk.type === "server_message") {
-          if (chunk.role === "user") {
-            if (pendingServerUserId && pendingServerUserId !== chunk.messageId) {
-              shouldPersistItems = false;
+          if (chunk.type === "server_message") {
+            if (chunk.role === "user") {
+              if (pendingServerUserId && pendingServerUserId !== chunk.messageId) {
+                shouldPersistItems = false;
+              }
+              pendingServerUserId = chunk.messageId;
             }
-            pendingServerUserId = chunk.messageId;
+            continue;
           }
-          continue;
-        }
 
         if (chunk.type === "text") {
 
@@ -865,60 +865,59 @@ export class OpencodianView extends ItemView {
           continue;
         }
 
-        if (chunk.type === "done") {
-          clearWorking();
+          if (chunk.type === "done") {
+            clearWorking();
 
-          await renderActiveMarkdown();
-
-          if (items.length === 0) {
-            this.addErrorMessage("No response received. Please try again.");
-          }
-
-          if (conv) {
-            if (pendingServerUserId) {
-              const lastUser = [...conv.messages]
-                .reverse()
-                .find((m): m is Conversation["messages"][number] => m.role === "user");
-              if (lastUser && !lastUser.serverId) {
-                lastUser.serverId = pendingServerUserId;
-              }
-              pendingServerUserId = null;
-            }
-
-            if (!shouldPersistItems) {
-              await this.plugin.saveConversation(conv);
-              this.setGeneratingState(false);
-              continue;
-            }
+            await renderActiveMarkdown();
 
             if (items.length === 0) {
+              this.addErrorMessage("No response received. Please try again.");
+            }
+
+            if (conv) {
+              if (pendingServerUserId) {
+                const lastUser = [...conv.messages]
+                  .reverse()
+                  .find((m): m is Conversation["messages"][number] => m.role === "user");
+                if (lastUser && !lastUser.serverId) {
+                  lastUser.serverId = pendingServerUserId;
+                }
+                pendingServerUserId = null;
+              }
+
+              if (!shouldPersistItems) {
+                await this.plugin.saveConversation(conv);
+                this.setGeneratingState(false);
+                continue;
+              }
+
+              if (items.length === 0) {
+                conv.messages.push({
+                  id: this.createMessageId(),
+                  role: "assistant",
+                  type: "message",
+                  error: "No response received. Please try again.",
+                  timestamp: Date.now(),
+                });
+                await this.plugin.saveConversation(conv);
+                this.setGeneratingState(false);
+                continue;
+              }
+
               conv.messages.push({
                 id: this.createMessageId(),
                 role: "assistant",
                 type: "message",
-                error: "No response received. Please try again.",
+                items,
                 timestamp: Date.now(),
               });
               await this.plugin.saveConversation(conv);
-              this.setGeneratingState(false);
-              continue;
             }
 
-            conv.messages.push({
-              id: this.createMessageId(),
-              role: "assistant",
-              type: "message",
-              items,
-              timestamp: Date.now(),
-            });
-            await this.plugin.saveConversation(conv);
+            this.setGeneratingState(false);
+            continue;
           }
-
-
-          this.setGeneratingState(false);
-          continue;
         }
-      }
     } catch (error) {
       clearWorking();
 
