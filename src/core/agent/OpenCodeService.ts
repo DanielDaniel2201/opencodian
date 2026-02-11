@@ -123,6 +123,10 @@ export class OpenCodeService {
     this.debugEnabled = enabled;
   }
 
+  getDebugEnabled(): boolean {
+    return this.debugEnabled;
+  }
+
   setServerPort(port: number): void {
     if (!Number.isFinite(port) || port <= 0) return;
     const nextPort = Math.floor(port);

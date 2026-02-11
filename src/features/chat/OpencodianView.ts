@@ -92,7 +92,10 @@ export class OpencodianView extends ItemView {
     container.addClass("opencodian-view");
 
     // Create main container
-    this.mainContainerEl = container.createDiv({ cls: "opencodian-container" });
+    this.mainContainerEl = container.createDiv({
+      cls: "opencodian-container",
+      attr: { "data-testid": "opencodian-root" },
+    });
 
     // ========== HEADER ==========
     const headerEl = this.mainContainerEl.createDiv({
@@ -109,7 +112,10 @@ export class OpencodianView extends ItemView {
     // History button (clock icon)
     this.historyBtnEl = actionsEl.createDiv({
       cls: "opencodian-action-btn",
-      attr: { "aria-label": "History" },
+      attr: {
+        "aria-label": "History",
+        "data-testid": "opencodian-history-button",
+      },
     });
     setIcon(this.historyBtnEl, "clock");
     this.historyBtnEl.addEventListener("click", (e) => {
@@ -120,7 +126,10 @@ export class OpencodianView extends ItemView {
     // New chat button (plus icon)
     const newChatBtn = actionsEl.createDiv({
       cls: "opencodian-action-btn",
-      attr: { "aria-label": "New Chat" },
+      attr: {
+        "aria-label": "New Chat",
+        "data-testid": "opencodian-new-chat",
+      },
     });
     setIcon(newChatBtn, "plus");
     newChatBtn.addEventListener("click", async () => {
@@ -131,6 +140,7 @@ export class OpencodianView extends ItemView {
     // ========== HISTORY DROPDOWN ==========
     this.historyDropdownEl = this.mainContainerEl.createDiv({
       cls: "opencodian-history-dropdown",
+      attr: { "data-testid": "opencodian-history-dropdown" },
     });
     this.historyDropdownEl.style.display = "none";
 
@@ -150,6 +160,7 @@ export class OpencodianView extends ItemView {
     // ========== MESSAGES AREA ==========
     this.messagesEl = this.mainContainerEl.createDiv({
       cls: "opencodian-messages",
+      attr: { "data-testid": "opencodian-messages" },
     });
 
     // ========== INPUT AREA ==========
@@ -169,6 +180,7 @@ export class OpencodianView extends ItemView {
         "aria-multiline": "true",
         "data-placeholder": "@ files, folders, skills",
         "data-empty": "true",
+        "data-testid": "opencodian-input",
       },
     });
 
@@ -184,7 +196,10 @@ export class OpencodianView extends ItemView {
     // Right: Send Button
     this.sendButtonEl = toolbarEl.createEl("button", {
       cls: "opencodian-send-button",
-      attr: { "aria-label": "Send" },
+      attr: {
+        "aria-label": "Send",
+        "data-testid": "opencodian-send",
+      },
     });
     setIcon(this.sendButtonEl, "arrow-up");
 
@@ -251,6 +266,8 @@ export class OpencodianView extends ItemView {
     ) as HTMLElement;
     if (!listContainer) return;
 
+    listContainer.setAttribute("data-testid", "opencodian-history-list");
+
     listContainer.empty();
 
     const conversations = this.plugin.getConversations();
@@ -259,6 +276,7 @@ export class OpencodianView extends ItemView {
     for (const conv of conversations) {
       const itemEl = listContainer.createDiv({
         cls: `conversation-item ${conv.id === activeId ? "active" : ""}`,
+        attr: { "data-testid": "opencodian-history-item" },
       });
 
       // Content
@@ -1395,6 +1413,7 @@ export class OpencodianView extends ItemView {
   private addErrorMessage(message: string): HTMLElement {
     const msgEl = this.messagesEl.createDiv({
       cls: "message message-assistant",
+      attr: { "data-testid": "opencodian-message" },
     });
 
     const roleEl = msgEl.createDiv({ cls: "message-role" });
@@ -1418,7 +1437,11 @@ export class OpencodianView extends ItemView {
   ): HTMLElement {
     const msgEl = this.messagesEl.createDiv({
       cls: `message message-${role}`,
-      attr: messageId ? { "data-message-id": messageId } : undefined,
+      attr: {
+        ...(messageId ? { "data-message-id": messageId } : {}),
+        "data-testid": "opencodian-message",
+        "data-role": role,
+      },
     });
 
     const roleEl = msgEl.createDiv({ cls: "message-role" });
@@ -1431,7 +1454,10 @@ export class OpencodianView extends ItemView {
         ? bubbleEl.createDiv({ cls: "opencodian-message-hotzone" })
         : bubbleEl;
 
-    const contentEl = hotzoneEl.createDiv({ cls: "message-content" });
+    const contentEl = hotzoneEl.createDiv({
+      cls: "message-content",
+      attr: { "data-testid": "opencodian-message-content" },
+    });
     // Assistant messages use a timeline container instead of this contentEl; callers may remove it.
 
     if (role === "user" && messageId) {

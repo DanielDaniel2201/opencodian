@@ -40,6 +40,10 @@ export default class OpencodianPlugin extends Plugin {
     this.agentService.setServerPort(this.settings.opencodePort);
     this.agentService.setEnvironmentVariables(this.settings.environmentVariables);
 
+    if (this.settings.debugLogging) {
+      this.registerTestHarness();
+    }
+
     // Register view
     this.registerView(
       VIEW_TYPE_OPENCODIAN,
@@ -71,6 +75,25 @@ export default class OpencodianPlugin extends Plugin {
 
   onunload() {
     this.agentService.cleanup();
+  }
+
+  private registerTestHarness(): void {
+    const win = window as unknown as {
+      opencodianTestHarness?: {
+        getStatus: () => Promise<Record<string, unknown>>;
+        getConversations: () => ConversationMeta[];
+      };
+    };
+
+    win.opencodianTestHarness = {
+      getStatus: async () => ({
+        activeConversationId: this.activeConversationId,
+        sessionId: this.agentService.getSessionId(),
+        debugLogging: this.agentService.getDebugEnabled(),
+        serverPort: this.settings.opencodePort,
+      }),
+      getConversations: () => this.conversations,
+    };
   }
 
   /** Opens the Opencodian sidebar view */

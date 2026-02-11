@@ -8,7 +8,8 @@
     "build": "node esbuild.config.mjs production",
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.ts\"",
-    "lint:fix": "npm run lint -- --fix"
+    "lint:fix": "npm run lint -- --fix",
+    "test:e2e": "node ./tests/e2e/run-e2e.cjs"
   },
   "keywords": [
     "obsidian",
@@ -26,6 +27,8 @@
     "esbuild": "^0.27.1",
     "eslint": "^8.57.0",
     "obsidian": "latest",
+    "@playwright/test": "^1.51.0",
+    "playwright": "^1.51.0",
     "typescript": "^5.0.0"
   },
   "dependencies": {
