@@ -1,12 +1,10 @@
 # Opencodian
 
-<p style="color: red; font-weight: bold;">WARNING: This repository is currently undergoing a MAJOR refactor. The codebase is unstable and not recommended for use at this time. Expect breaking changes and frequent updates.</p>
-
 > **Disclaimer**: This is an **unofficial** community-driven project. It is not affiliated with, maintained, or endorsed by the OpenCode team or opencode.ai.
 
 Opencodian is an Obsidian plugin that embeds OpenCode as a sidebar chat interface. By treating your Obsidian vault as the working directory, it provides full agentic capabilities, including file reading/writing, bash command execution, and complex multi-step workflows.
 
-> **Note**: This project is in early, active development. Bugs are to be expected. Issues and Pull Requests are highly welcome!
+> **Note**: This project is in early, active development. Bugs are to be expected.
 
 ## Prerequisites
 
