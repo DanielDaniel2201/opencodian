@@ -1172,6 +1172,53 @@
   opacity: 0.9;
 }
 
+.opencodian-welcome-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-error);
+  margin-top: 6px;
+}
+
+.opencodian-welcome-warning-text {
+  font-weight: 500;
+}
+
+.opencodian-status-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.opencodian-status-line.is-ok {
+  color: var(--text-success);
+}
+
+.opencodian-status-line.is-missing {
+  color: var(--text-error);
+}
+
+.opencodian-status-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: rgba(var(--color-red-rgb), 0.15);
+  color: var(--text-error);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.opencodian-status-text {
+  font-weight: 500;
+}
+
 
 /* ========== FILE MENTION SYSTEM ========== */
 

@@ -2090,15 +2090,30 @@ export class OpencodianView extends ItemView {
   }
 
   private showWelcomeMessage(): void {
+    const runtimeStatus = this.plugin.agentService.getRuntimeStatus();
+    const missing: string[] = [];
+    if (!runtimeStatus.binaryDetected) {
+      missing.push("OpenCode binary");
+    }
+    if (!runtimeStatus.configDetected) {
+      missing.push(".opencode config folder");
+    }
+
     const welcomeEl = this.messagesEl.createDiv({ cls: "opencodian-welcome" });
     welcomeEl.createDiv({
       text: "Opencodian",
       cls: "opencodian-welcome-line",
     });
-    welcomeEl.createDiv({
-      text: "Copy your opencode.json into .obsidian/plugins/opencodian/.opencode",
-      cls: "opencodian-welcome-subline",
-    });
+    if (missing.length > 0) {
+      const warningEl = welcomeEl.createDiv({
+        cls: "opencodian-welcome-warning",
+      });
+      warningEl.createSpan({ text: "!", cls: "opencodian-status-icon" });
+      warningEl.createSpan({
+        text: ` Not detected: ${missing.join(", ")}`,
+        cls: "opencodian-welcome-warning-text",
+      });
+    }
   }
 
 

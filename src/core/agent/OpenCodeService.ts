@@ -52,6 +52,13 @@ export interface QueryOptions {
   timeout?: number;
 }
 
+export interface RuntimeStatus {
+  binaryDetected: boolean;
+  configDetected: boolean;
+  binaryPath: string | null;
+  configDir: string | null;
+}
+
 type ToolAttachment = {
   url: string;
   filename?: string;
@@ -449,6 +456,49 @@ export class OpenCodeService {
         `Missing OpenCode config directory at ${dir}. Please see README prerequisites.`,
       );
     }
+  }
+
+  getRuntimeStatus(): RuntimeStatus {
+    const basePath = this.getVaultBasePath();
+    if (!basePath) {
+      return {
+        binaryDetected: false,
+        configDetected: false,
+        binaryPath: null,
+        configDir: null,
+      };
+    }
+
+    const configDir = path.join(
+      basePath,
+      ".obsidian",
+      "plugins",
+      "opencodian",
+      ".opencode",
+    );
+    const binDir = path.join(
+      basePath,
+      ".obsidian",
+      "plugins",
+      "opencodian",
+      "bin",
+    );
+    const platform = process.platform;
+    const binaryPath =
+      platform === "win32"
+        ? path.join(binDir, "win", "opencode.exe")
+        : platform === "darwin"
+          ? path.join(binDir, "mac", "opencode")
+          : platform === "linux"
+            ? path.join(binDir, "linux", "opencode")
+            : null;
+
+    return {
+      binaryDetected: binaryPath ? fs.existsSync(binaryPath) : false,
+      configDetected: fs.existsSync(configDir),
+      binaryPath,
+      configDir,
+    };
   }
 
   private buildServerEnv(): Record<string, string> {

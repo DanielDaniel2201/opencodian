@@ -120,6 +120,31 @@ export class OpencodianSettingTab extends PluginSettingTab {
       .setName("Environment variable changes")
       .setDesc("Changes apply after restarting the plugin.");
 
+    // ========== OpenCode Status ==========
+    new Setting(containerEl).setName("OpenCode Status").setHeading();
+
+    const runtimeStatus = this.plugin.agentService.getRuntimeStatus();
+
+    const addStatusSetting = (label: string, detected: boolean): void => {
+      const setting = new Setting(containerEl).setName(label).setDesc("");
+      const descEl = setting.descEl;
+      descEl.empty();
+
+      const lineEl = descEl.createSpan({ cls: "opencodian-status-line" });
+      if (detected) {
+        lineEl.addClass("is-ok");
+        lineEl.setText("Detected");
+        return;
+      }
+
+      lineEl.addClass("is-missing");
+      lineEl.createSpan({ text: "!", cls: "opencodian-status-icon" });
+      lineEl.createSpan({ text: " Not detected", cls: "opencodian-status-text" });
+    };
+
+    addStatusSetting("OpenCode binary", runtimeStatus.binaryDetected);
+    addStatusSetting(".opencode config folder", runtimeStatus.configDetected);
+
     // ========== Advanced Section ==========
     new Setting(containerEl).setName("Advanced").setHeading();
 
