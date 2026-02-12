@@ -40,3 +40,6 @@ opencodian-debug.json
 
 # Local OpenCode config/cache
 .opencode/
+
+# release temp files
+release-temp

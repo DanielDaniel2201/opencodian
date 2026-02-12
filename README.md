@@ -4,7 +4,7 @@
 
 Opencodian is an Obsidian plugin that embeds OpenCode as a sidebar chat interface. By treating your Obsidian vault as the working directory, it provides full agentic capabilities, including file reading/writing, bash command execution, and complex multi-step workflows.
 
-> **Note**: This project is in early, active development. Bugs are to be expected.
+Its functionality is proven effective on Windows, not yet on MacOS or Linux. Ideally, change the OpenCode binary to that on MacOS or Linux should work.
 
 ## Prerequisites
 
@@ -20,7 +20,8 @@ To start successfully, the plugin must contain:
 2. **Plugin-local OpenCode config directory**
    - `.obsidian/plugins/opencodian/.opencode/opencode.json` or `.obsidian/plugins/opencodian/.opencode/opencode.jsonc`
 
-If any of these files are missing, Opencodian will refuse to start the server and prompt you to review the prerequisites.
+For now, please copy your existing OpenCode config from `~/.config/opencode/` into `.obsidian/plugins/opencodian/.opencode/`.
+In a future release, configuration will be managed directly inside the Opencodian settings UI.
 
 ### OpenCode config format and location
 
@@ -57,9 +58,10 @@ You can find official install and release information here:
 1.  Download the latest release from the [Releases](https://github.com/DanielDaniel2201/opencodian/releases) page.
 2.  Navigate to your Obsidian vault's plugin directory: `<YourVaultPath>/.obsidian/plugins/`.
 3.  Create a new folder named `opencodian`.
-4.  Extract the downloaded files (`main.js`, `manifest.json`, `styles.css`) into this new folder.
-5.  Restart Obsidian or reload plugins.
-6.  Enable "Opencodian" in **Settings > Community plugins**.
+4.  Extract the downloaded files into this new folder.
+5. copy your existing OpenCode config from `~/.config/opencode/` into `.obsidian/plugins/opencodian/.opencode/`.
+6.  Restart Obsidian or reload plugins.
+7.  Enable "Opencodian" in **Settings > Community plugins**.
 
 ### Method 2: Build from Source (For Developers)
 
@@ -72,8 +74,14 @@ You can find official install and release information here:
     ```bash
     npm run build
     ```
-4.  Copy `main.js`, `manifest.json`, and `styles.css` to your vault's plugin folder: `<YourVaultPath>/.obsidian/plugins/opencodian/`.
-5.  Enable the plugin in Obsidian settings.
+4.  Run the release script to build and package the plugin:
+    ```
+    .\scripts\package-release.ps1
+    ```
+    This creates a zip file in release-temp/
+5.  Extract the generated zip (opencodian-windows-opencode-*.zip) into your vault's plugin directory: `<YourVaultPath>/.obsidian/plugins/opencodian/`
+6.   Copy your global OpenCode configuration to the plugin folder: `<YourVaultPath>\.obsidian\plugins\opencodian\.opencode\`
+7.  Enable the plugin in Obsidian settings.
 
 ## Development
 
