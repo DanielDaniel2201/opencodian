@@ -4,6 +4,11 @@
 
 Opencodian is an Obsidian plugin that embeds OpenCode AI as a sidebar chat interface. The vault directory becomes the working directory, providing full agentic capabilities: file read/write, bash commands, and multi-step workflows.
 
+Opencodian runs a dedicated bundled OpenCode runtime (not the system install):
+- Binary lives in `.obsidian/plugins/opencodian/bin/{win,mac,linux}`
+- Config lives in `.obsidian/plugins/opencodian/.opencode`
+- Project config discovery is disabled for the server process
+
 **Reference projects** in `reference/`:
 - `opencode/` - OpenCode source (AI coding agent platform)
 - `claudian/` - Similar Obsidian plugin for Claude (architecture reference)
@@ -171,7 +176,7 @@ await MarkdownRenderer.render(this.app, content, container, "", this);
 The plugin uses `@opencode-ai/sdk` to communicate with the OpenCode server:
 
 ```typescript
-import { createOpencodeClient } from "@opencode-ai/sdk/client";
+import { createOpencodeClient } from "@opencode-ai/sdk/v2";
 
 const client = createOpencodeClient({ baseUrl: serverUrl });
 const session = await client.session.create({ path: vaultPath });
@@ -195,4 +200,5 @@ for await (const event of eventStream) {
 - Reference `claudian/CLAUDE.md` for detailed Obsidian plugin patterns
 - Reference `opencode/STYLE_GUIDE.md` for code style preferences
 - The OpenCode server is spawned as a child process and communicates via HTTP
+- Default server port is 4097 (falls back to a random open port if unavailable)
 - Sessions and conversations are managed locally, not synced to cloud
