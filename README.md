@@ -89,6 +89,10 @@ You can find official install and release information here:
 2.  **Dev Mode**: `npm run dev`
 3.  **Lint**: `npm run lint`
 
+## Contribution
+
+Issues are welcome, but this repository doesn't receive external PRs.
+
 ## Acknowledgements
 
 Special thanks to:
