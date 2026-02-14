@@ -1,5 +1,5 @@
 /**
- * FileMention - unified @ mention system for files and skills
+ * FileMention - unified @ mention system for files, skills, and agents
  *
  * IMPORTANT: This implementation targets a `contenteditable` input element.
  * It inserts inline, clickable chips directly into the text flow.
@@ -9,6 +9,7 @@ import { TFolder, TFile, setIcon, type App } from "obsidian";
 import * as fs from "fs";
 import * as path from "path";
 
+import type { AgentInfo } from "../../core/types";
 import type { SkillItem } from "./SkillMention";
 
 /** Represents a mentionable file or folder */
@@ -21,15 +22,16 @@ export interface MentionItem {
 type UnifiedMentionItem =
   | { type: "file"; item: MentionItem }
   | { type: "skill"; item: SkillItem }
+  | { type: "agent"; item: AgentInfo }
   | {
       type: "category";
       item: {
-        category: "files" | "skills";
+        category: "files" | "skills" | "agents";
         name: string;
       };
     };
 
-type MentionCategory = "root" | "files" | "skills";
+type MentionCategory = "root" | "files" | "skills" | "agents";
 
 export class FileMention {
   private app: App;
@@ -43,6 +45,7 @@ export class FileMention {
 
   private fileItems: MentionItem[] = [];
   private skillItems: SkillItem[] = [];
+  private agentItems: AgentInfo[] = [];
   private filteredItems: UnifiedMentionItem[] = [];
   private selectedIndex: number = 0;
   private mentionRange: Range | null = null;
@@ -52,15 +55,23 @@ export class FileMention {
 
   private mentions: MentionItem[] = [];
   private skillMentions: SkillItem[] = [];
+  private agentMentions: AgentInfo[] = [];
   private activeFileMention: MentionItem | null = null;
   private skipNativePaste: boolean = false;
+  private loadAgents?: () => Promise<AgentInfo[]>;
 
 
 
-  constructor(app: App, inputEl: HTMLElement, containerEl: HTMLElement) {
+  constructor(
+    app: App,
+    inputEl: HTMLElement,
+    containerEl: HTMLElement,
+    loadAgents?: () => Promise<AgentInfo[]>,
+  ) {
     this.app = app;
     this.inputEl = inputEl;
     this.containerEl = containerEl;
+    this.loadAgents = loadAgents;
 
     this.handlePasteBound = this.handlePaste.bind(this);
     this.handleDropBound = this.handleDrop.bind(this);
@@ -83,7 +94,7 @@ export class FileMention {
     this.createSuggestionsEl();
   }
 
-  /** Load files, folders, and skills */
+  /** Load files, folders, skills, and agents */
   private async loadItems(): Promise<void> {
     const items: MentionItem[] = [];
     const seenFolders = new Set<string>();
@@ -121,6 +132,22 @@ export class FileMention {
 
     this.fileItems = items;
     this.skillItems = await this.loadSkillItems();
+    this.agentItems = await this.loadAgentItems();
+  }
+
+  private async loadAgentItems(): Promise<AgentInfo[]> {
+    if (!this.loadAgents) return [];
+
+    try {
+      const agents = await this.loadAgents();
+      const available = agents.filter(
+        (agent) => agent.mode === "subagent" && agent.hidden !== true,
+      );
+      available.sort((a, b) => a.name.localeCompare(b.name));
+      return available;
+    } catch {
+      return [];
+    }
   }
 
   private isHiddenPath(path: string): boolean {
@@ -576,7 +603,7 @@ export class FileMention {
    */
   private ensureChipZWS(): void {
     const chips = this.inputEl.querySelectorAll(
-      ".opencodian-inline-mention-chip, .opencodian-inline-skill-chip",
+      ".opencodian-inline-mention-chip, .opencodian-inline-skill-chip, .opencodian-inline-agent-chip",
     );
 
     for (const chip of Array.from(chips)) {
@@ -612,6 +639,11 @@ export class FileMention {
       (item) => !mentionedSkills.has(item.path),
     );
 
+    const mentionedAgents = new Set(this.agentMentions.map((m) => m.name));
+    const availableAgents = this.agentItems.filter(
+      (item) => !mentionedAgents.has(item.name),
+    );
+
     if (!query) {
       if (this.mentionCategory === "root") {
         this.filteredItems = [
@@ -622,6 +654,10 @@ export class FileMention {
           {
             type: "category",
             item: { category: "skills", name: "skills" },
+          },
+          {
+            type: "category",
+            item: { category: "agents", name: "agents" },
           },
         ];
         this.selectedIndex = 0;
@@ -635,6 +671,16 @@ export class FileMention {
         );
         this.filteredItems = topLevelFiles.map((item) => ({
           type: "file",
+          item,
+        }));
+        this.selectedIndex = 0;
+        this.renderSuggestions();
+        return;
+      }
+
+      if (this.mentionCategory === "agents") {
+        this.filteredItems = availableAgents.map((item) => ({
+          type: "agent",
           item,
         }));
         this.selectedIndex = 0;
@@ -663,6 +709,12 @@ export class FileMention {
       return name.includes(lowerQuery) || description.includes(lowerQuery);
     });
 
+    const filteredAgents = availableAgents.filter((item) => {
+      const name = item.name.toLowerCase();
+      const description = (item.description ?? "").toLowerCase();
+      return name.includes(lowerQuery) || description.includes(lowerQuery);
+    });
+
     const fileMatches: UnifiedMentionItem[] = filteredFiles.map((item) => ({
       type: "file",
       item,
@@ -671,17 +723,23 @@ export class FileMention {
       type: "skill",
       item,
     }));
+    const agentMatches: UnifiedMentionItem[] = filteredAgents.map((item) => ({
+      type: "agent",
+      item,
+    }));
 
     if (query) {
       const maxItems = 20;
-      const maxSkills = Math.min(skillMatches.length, 8);
-      const maxFiles = Math.max(maxItems - maxSkills, 0);
+      const maxSkills = Math.min(skillMatches.length, 6);
+      const maxAgents = Math.min(agentMatches.length, 6);
+      const maxFiles = Math.max(maxItems - maxSkills - maxAgents, 0);
       this.filteredItems = [
         ...fileMatches.slice(0, maxFiles),
         ...skillMatches.slice(0, maxSkills),
+        ...agentMatches.slice(0, maxAgents),
       ];
     } else {
-      this.filteredItems = [...fileMatches, ...skillMatches];
+      this.filteredItems = [...fileMatches, ...skillMatches, ...agentMatches];
     }
 
     this.selectedIndex = 0;
@@ -712,7 +770,13 @@ export class FileMention {
       const iconEl = document.createElement("span");
       iconEl.className = "opencodian-mention-icon";
       if (option.type === "category") {
-        setIcon(iconEl, option.item.category === "files" ? "folder" : "wand");
+        if (option.item.category === "files") {
+          setIcon(iconEl, "folder");
+        } else if (option.item.category === "skills") {
+          setIcon(iconEl, "wand");
+        } else {
+          setIcon(iconEl, "bot");
+        }
       }
 
       if (option.type === "file") {
@@ -721,6 +785,10 @@ export class FileMention {
 
       if (option.type === "skill") {
         setIcon(iconEl, "wand");
+      }
+
+      if (option.type === "agent") {
+        setIcon(iconEl, "bot");
       }
 
       itemEl.appendChild(iconEl);
@@ -739,6 +807,10 @@ export class FileMention {
         pathEl.textContent = option.item.name;
       }
 
+      if (option.type === "agent") {
+        pathEl.textContent = option.item.name;
+      }
+
       itemEl.appendChild(pathEl);
 
       if (option.type === "skill") {
@@ -746,6 +818,13 @@ export class FileMention {
         scopeEl.className = "opencodian-mention-scope";
         scopeEl.textContent = option.item.scope;
         itemEl.appendChild(scopeEl);
+      }
+
+      if (option.type === "agent") {
+        const modeEl = document.createElement("span");
+        modeEl.className = "opencodian-mention-scope";
+        modeEl.textContent = option.item.mode;
+        itemEl.appendChild(modeEl);
       }
 
       if (option.type === "category") {
@@ -917,6 +996,45 @@ export class FileMention {
     return chipEl;
   }
 
+  private createAgentChip(item: AgentInfo): HTMLElement {
+    const chipEl = document.createElement("span");
+    chipEl.className = "opencodian-inline-agent-chip opencodian-inline-skill-chip";
+
+    chipEl.setAttribute("contenteditable", "false");
+    chipEl.setAttribute("data-agent-name", item.name);
+    chipEl.setAttribute("data-agent-mode", item.mode);
+    chipEl.setAttribute("data-agent-hidden", item.hidden ? "1" : "0");
+    chipEl.title = item.description || item.name;
+
+    const clickArea = document.createElement("span");
+    clickArea.className = "opencodian-inline-skill-chip-click";
+
+    const iconEl = document.createElement("span");
+    iconEl.className = "opencodian-inline-skill-chip-icon";
+    setIcon(iconEl, "bot");
+    clickArea.appendChild(iconEl);
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "opencodian-inline-skill-chip-name";
+    nameEl.textContent = item.name;
+    clickArea.appendChild(nameEl);
+
+    chipEl.appendChild(clickArea);
+
+    const removeEl = document.createElement("span");
+    removeEl.className = "opencodian-inline-skill-chip-remove";
+    setIcon(removeEl, "x");
+    removeEl.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.removeAgentMention(item);
+      this.removeChipWithAdjacentZws(chipEl);
+    });
+    chipEl.appendChild(removeEl);
+
+    return chipEl;
+  }
+
 
   private insertNodeAtCursor(node: Node): void {
     const range = this.getSelectionRangeInInput();
@@ -1061,6 +1179,13 @@ export class FileMention {
         }
       }
 
+      if (chip.classList.contains("opencodian-inline-agent-chip")) {
+        const name = chip.getAttribute("data-agent-name") || "";
+        if (name) {
+          this.agentMentions = this.agentMentions.filter((m) => m.name !== name);
+        }
+      }
+
       this.removeChipWithAdjacentZws(chip);
       return true;
     };
@@ -1108,6 +1233,11 @@ export class FileMention {
 
     if (item.type === "file") {
       this.insertFileMention(item.item);
+      return;
+    }
+
+    if (item.type === "agent") {
+      this.insertAgentMention(item.item);
       return;
     }
 
@@ -1190,6 +1320,44 @@ export class FileMention {
     this.inputEl.focus();
   }
 
+  private insertAgentMention(item: AgentInfo): void {
+    if (!this.agentMentions.find((m) => m.name === item.name)) {
+      this.agentMentions.push(item);
+    }
+
+    if (this.mentionRange) {
+      this.mentionRange.deleteContents();
+
+      const chipEl = this.createAgentChip(item);
+
+      const zwsBefore = document.createTextNode(FileMention.ZWS);
+      this.mentionRange.insertNode(zwsBefore);
+      zwsBefore.after(chipEl);
+
+      const space = document.createTextNode(" ");
+      chipEl.after(space);
+
+      const after = document.createRange();
+      after.setStartAfter(space);
+      after.collapse(true);
+
+      const sel = window.getSelection();
+      if (sel) {
+        sel.removeAllRanges();
+        sel.addRange(after);
+      }
+
+      this.mentionRange = null;
+    } else {
+      this.insertTextAtCursor(FileMention.ZWS);
+      this.insertNodeAtCursor(this.createAgentChip(item));
+      this.insertTextAtCursor(" ");
+    }
+
+    this.hide();
+    this.inputEl.focus();
+  }
+
 
   private show(): void {
     if (!this.suggestionsEl) return;
@@ -1244,6 +1412,10 @@ export class FileMention {
     this.skillMentions = this.skillMentions.filter((m) => m.path !== item.path);
   }
 
+  private removeAgentMention(item: AgentInfo): void {
+    this.agentMentions = this.agentMentions.filter((m) => m.name !== item.name);
+  }
+
 
   /** Get current mention paths */
   getMentionPaths(): string[] {
@@ -1283,6 +1455,24 @@ export class FileMention {
     return out;
   }
 
+  private getAgentMentionsFromDom(): AgentInfo[] {
+    const els = this.inputEl.querySelectorAll(
+      ".opencodian-inline-agent-chip[data-agent-name]",
+    );
+
+    const out: AgentInfo[] = [];
+    for (const el of Array.from(els)) {
+      const name = el.getAttribute("data-agent-name") || "";
+      const modeAttr = el.getAttribute("data-agent-mode") || "subagent";
+      const hidden = el.getAttribute("data-agent-hidden") === "1";
+      const mode =
+        modeAttr === "primary" || modeAttr === "all" ? modeAttr : "subagent";
+      if (!name) continue;
+      out.push({ name, mode, hidden });
+    }
+    return out;
+  }
+
   getMentions(): MentionItem[] {
     return this.getMentionsFromDom();
   }
@@ -1294,6 +1484,10 @@ export class FileMention {
 
   getSkills(): SkillItem[] {
     return this.getSkillMentionsFromDom();
+  }
+
+  getAgents(): AgentInfo[] {
+    return this.getAgentMentionsFromDom();
   }
 
   getTextWithSkills(): string {
@@ -1363,6 +1557,14 @@ export class FileMention {
       chip.replaceWith(document.createTextNode(name));
     }
 
+    const agentChips = clone.querySelectorAll(
+      ".opencodian-inline-agent-chip[data-agent-name]",
+    );
+    for (const chip of Array.from(agentChips)) {
+      const name = chip.getAttribute("data-agent-name") || "";
+      chip.replaceWith(document.createTextNode(name));
+    }
+
     return (clone.textContent || "").replace(/\u200B/g, "").trim();
   }
 
@@ -1371,10 +1573,11 @@ export class FileMention {
   clearMentions(): void {
     this.mentions = [];
     this.skillMentions = [];
+    this.agentMentions = [];
     this.activeFileMention = null;
 
     const chips = this.inputEl.querySelectorAll(
-      ".opencodian-inline-mention-chip, .opencodian-inline-skill-chip",
+      ".opencodian-inline-mention-chip, .opencodian-inline-skill-chip, .opencodian-inline-agent-chip",
     );
     chips.forEach((el) => el.remove());
   }

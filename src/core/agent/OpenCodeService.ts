@@ -22,6 +22,7 @@ import type {
   ImageAttachment,
   StreamChunk,
   ConfigProvidersResponse,
+  AgentInfo,
 } from "../types";
 import {
   OpencodianError,
@@ -41,6 +42,7 @@ export interface MentionContext {
 export interface QueryOptions {
   model?: string;
   allowedTools?: string[];
+  agents?: string[];
   permissionMode?: "yolo" | "safe";
   /** File/folder paths mentioned with @ syntax */
   mentions?: string[];
@@ -863,6 +865,7 @@ export class OpenCodeService {
     const parts: Array<
       | { type: "text"; text: string }
       | { type: "file"; url: string; filename: string; mime: string }
+      | { type: "agent"; name: string }
     > = [];
 
     const vaultPath = this.getVaultBasePath();
@@ -900,6 +903,20 @@ export class OpenCodeService {
       }
     }
 
+    if (queryOptions?.agents && queryOptions.agents.length > 0) {
+      const names = new Set<string>();
+      for (const name of queryOptions.agents) {
+        const trimmed = name.trim();
+        if (!trimmed) continue;
+        if (names.has(trimmed)) continue;
+        names.add(trimmed);
+        parts.push({
+          type: "agent",
+          name: trimmed,
+        });
+      }
+    }
+
     parts.push({ type: "text", text: prompt });
 
 
@@ -917,6 +934,7 @@ export class OpenCodeService {
     debugMeta.model = modelConfig ?? null;
     debugMeta.conversationId = queryOptions?.conversationId ?? null;
     debugMeta.allowedTools = queryOptions?.allowedTools ?? [];
+    debugMeta.agents = queryOptions?.agents ?? [];
     debugMeta.mentionCount = queryOptions?.mentions?.length ?? 0;
     debugMeta.mentionContextCount = queryOptions?.mentionContexts?.length ?? 0;
     debugMeta.filePartCount = parts.filter((part) => part.type === "file").length;
@@ -1532,6 +1550,69 @@ export class OpenCodeService {
 
       req.on("error", (err) => {
         console.error("[OpenCodeService] Failed to fetch providers:", err);
+        reject(err);
+      });
+
+      req.end();
+    });
+  }
+
+  /**
+   * Get available agents from OpenCode server
+   * Uses GET /agent endpoint
+   */
+  async getAgents(): Promise<AgentInfo[]> {
+    await this.init();
+
+    if (!this.client) {
+      throw new Error("OpenCode client not initialized");
+    }
+
+    return new Promise<AgentInfo[]>((resolve, reject) => {
+      const urlObj = new URL(`${this.serverUrl}/agent`);
+      const vaultDirectory = this.getVaultBasePath();
+      if (vaultDirectory) {
+        urlObj.searchParams.set("directory", vaultDirectory);
+      }
+
+      const req = http.request(
+        urlObj,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+          timeout: 10000,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+          res.on("end", () => {
+            const buffer = Buffer.concat(chunks);
+            const responseText = buffer.toString("utf-8");
+
+            if (res.statusCode && res.statusCode >= 400) {
+              reject(new Error(`Failed to fetch agents: ${res.statusCode}`));
+              return;
+            }
+
+            try {
+              const data = JSON.parse(responseText) as AgentInfo[];
+              resolve(Array.isArray(data) ? data : []);
+            } catch {
+              reject(new Error("Failed to parse agent response"));
+            }
+          });
+        }
+      );
+
+      req.on("timeout", () => {
+        req.destroy();
+        reject(new Error("Request timed out while fetching agents"));
+      });
+
+      req.on("error", (err) => {
+        console.error("[OpenCodeService] Failed to fetch agents:", err);
         reject(err);
       });
 

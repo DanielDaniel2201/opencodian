@@ -20,6 +20,7 @@ import type {
   ModelOption,
   ChatItem,
   Conversation,
+  AgentInfo,
 } from "../../core/types";
 import type { MentionContext } from "../../core/agent/OpenCodeService";
 import type { SkillInfo } from "../../core/types";
@@ -178,7 +179,7 @@ export class OpencodianView extends ItemView {
         contenteditable: "true",
         role: "textbox",
         "aria-multiline": "true",
-        "data-placeholder": "@ files, folders, skills",
+        "data-placeholder": "@ files, folders, skills, agents",
         "data-empty": "true",
         "data-testid": "opencodian-input",
       },
@@ -209,6 +210,7 @@ export class OpencodianView extends ItemView {
       this.plugin.app,
       this.inputEl,
       inputWrapper,
+      () => this.plugin.agentService.getAgents(),
     );
 
 
@@ -450,6 +452,7 @@ export class OpencodianView extends ItemView {
           undefined,
           msg.mentions,
           msg.skills,
+          msg.agents,
         );
         continue;
       }
@@ -514,6 +517,7 @@ export class OpencodianView extends ItemView {
       : this.inputEl.textContent || "";
 
     const skills = this.fileMention ? this.fileMention.getSkills() : [];
+    const agents = this.fileMention ? this.fileMention.getAgents() : [];
 
     if (this.fileMention) this.fileMention.clear();
     if (!this.fileMention) {
@@ -527,7 +531,15 @@ export class OpencodianView extends ItemView {
       scope: skill.scope,
     }));
 
-    await this.sendUserMessage(text, fileMentions, skillsInfo);
+    const agentsInfo: AgentInfo[] = agents.map((agent) => ({
+      name: agent.name,
+      description: agent.description,
+      mode: agent.mode,
+      hidden: agent.hidden,
+      builtIn: agent.builtIn,
+    }));
+
+    await this.sendUserMessage(text, fileMentions, skillsInfo, agentsInfo);
   }
 
 
@@ -535,6 +547,7 @@ export class OpencodianView extends ItemView {
     rawText: string,
     mentionItems?: Array<{ path: string; name: string; isFolder: boolean }>,
     skills?: SkillInfo[],
+    agents?: AgentInfo[],
   ): Promise<void> {
     const text = rawText.trim();
     if (!text) return;
@@ -559,6 +572,8 @@ export class OpencodianView extends ItemView {
     }));
 
     const skillsFinal = skills && skills.length > 0 ? skills : undefined;
+    const agentsFinalRaw = agents && agents.length > 0 ? agents : undefined;
+    const agentsFinal = await this.resolveSelectedSubagents(agentsFinalRaw);
 
     // Build rich MentionContext with folder children
     const mentionContexts: MentionContext[] = mentionItemsFinal.map((m) => {
@@ -604,7 +619,7 @@ export class OpencodianView extends ItemView {
      const messageId = this.createMessageId();
 
 
-    // Add user message to UI (with mentions/skills)
+    // Add user message to UI (with mentions/skills/agents)
     this.addMessage(
       messageId,
       "user",
@@ -612,6 +627,7 @@ export class OpencodianView extends ItemView {
       undefined,
       mentions.length > 0 ? mentions : undefined,
       skillsFinal,
+      agentsFinal,
     );
 
     if (conv) {
@@ -623,6 +639,7 @@ export class OpencodianView extends ItemView {
         timestamp: Date.now(),
         mentions: mentions.length > 0 ? mentions : undefined,
         skills: skillsFinal,
+        agents: agentsFinal,
       });
 
       // Auto-title: If this is the first user message and title is default/empty, update it
@@ -707,6 +724,7 @@ export class OpencodianView extends ItemView {
           mentionContexts:
             mentionContexts.length > 0 ? mentionContexts : undefined,
           allowedTools: skillsFinal?.map((s) => s.name),
+          agents: agentsFinal?.map((a) => a.name),
           conversationId: conv?.id ?? undefined,
         },
 
@@ -1036,6 +1054,7 @@ export class OpencodianView extends ItemView {
       timestamp: Date.now(),
       mentions: original.mentions,
       skills: original.skills,
+      agents: original.agents,
     };
 
     conv.messages = [...messages, nextUser];
@@ -1084,6 +1103,8 @@ export class OpencodianView extends ItemView {
 
 
     try {
+      const selectedSubagents = await this.resolveSelectedSubagents(original.agents);
+
       const isTextItem = (
         v: ChatItem,
       ): v is Extract<ChatItem, { type: "text" }> => v.type === "text";
@@ -1110,6 +1131,7 @@ export class OpencodianView extends ItemView {
         {
           model: this.plugin.settings.model,
           permissionMode: this.plugin.settings.permissionMode,
+          agents: selectedSubagents?.map((a) => a.name),
           conversationId: conv.id,
         },
 
@@ -1433,6 +1455,7 @@ export class OpencodianView extends ItemView {
     _toolCalls?: unknown,
     mentions?: MentionInfo[],
     skills?: SkillInfo[],
+    agents?: AgentInfo[],
   ): HTMLElement {
     const msgEl = this.messagesEl.createDiv({
       cls: `message message-${role}`,
@@ -1473,13 +1496,15 @@ export class OpencodianView extends ItemView {
         // For user messages: render content with inline mention/skill chips
         if (
           (mentions && mentions.length > 0) ||
-          (skills && skills.length > 0)
+          (skills && skills.length > 0) ||
+          (agents && agents.length > 0)
         ) {
           this.renderContentWithInlineChips(
             contentEl,
             content,
             mentions,
             skills,
+            agents,
           );
         } else {
           contentEl.textContent = content;
@@ -1501,11 +1526,13 @@ export class OpencodianView extends ItemView {
     content: string,
     mentions?: MentionInfo[],
     skills?: SkillInfo[],
+    agents?: AgentInfo[],
   ): void {
     // Build combined list of tokens to replace
     type TokenInfo =
       | { type: "file"; name: string; data: MentionInfo }
-      | { type: "skill"; name: string; data: SkillInfo };
+      | { type: "skill"; name: string; data: SkillInfo }
+      | { type: "agent"; name: string; data: AgentInfo };
 
     const tokens: TokenInfo[] = [];
 
@@ -1520,6 +1547,13 @@ export class OpencodianView extends ItemView {
       for (const s of skills) {
         if (!s.name.trim()) continue;
         tokens.push({ type: "skill", name: s.name, data: s });
+      }
+    }
+
+    if (agents) {
+      for (const agent of agents) {
+        if (!agent.name.trim()) continue;
+        tokens.push({ type: "agent", name: agent.name, data: agent });
       }
     }
 
@@ -1547,6 +1581,7 @@ export class OpencodianView extends ItemView {
 
     const getTokenKey = (t: TokenInfo): string => {
       if (t.type === "file") return `file:${t.data.path}`;
+      if (t.type === "agent") return `agent:${t.data.name}`;
       return `skill:${t.data.path}`;
     };
 
@@ -1608,7 +1643,7 @@ export class OpencodianView extends ItemView {
             cls: "opencodian-inline-mention-chip-name",
           });
           nameEl.textContent = mention.name;
-        } else {
+        } else if (token.type === "skill") {
           // Skill chip (not clickable)
           const skill = token.data;
           const chipEl = containerEl.createSpan({
@@ -1629,6 +1664,26 @@ export class OpencodianView extends ItemView {
             cls: "opencodian-inline-skill-chip-name",
           });
           nameEl.textContent = skill.name;
+        } else {
+          const agent = token.data;
+          const chipEl = containerEl.createSpan({
+            cls: "opencodian-inline-agent-chip opencodian-inline-skill-chip opencodian-message-inline-chip opencodian-skill-chip-static",
+          });
+          chipEl.title = agent.description || agent.name;
+
+          const clickArea = chipEl.createSpan({
+            cls: "opencodian-inline-skill-chip-click",
+          });
+
+          const iconEl = clickArea.createSpan({
+            cls: "opencodian-inline-skill-chip-icon",
+          });
+          setIcon(iconEl, "bot");
+
+          const nameEl = clickArea.createSpan({
+            cls: "opencodian-inline-skill-chip-name",
+          });
+          nameEl.textContent = agent.name;
         }
       } else {
         // Regular text
@@ -2851,5 +2906,38 @@ export class OpencodianView extends ItemView {
 
     this.updateModelDisplay(modelLabel);
     this.toggleModelDropdown(false);
+  }
+
+  private async resolveSelectedSubagents(
+    agents?: AgentInfo[],
+  ): Promise<AgentInfo[] | undefined> {
+    if (!agents || agents.length === 0) return undefined;
+
+    try {
+      const available = await this.plugin.agentService.getAgents();
+      const map = new Map<string, AgentInfo>();
+      for (const agent of available) {
+        if (agent.mode !== "subagent") continue;
+        if (agent.hidden === true) continue;
+        map.set(agent.name, agent);
+      }
+
+      const resolved: AgentInfo[] = [];
+      for (const agent of agents) {
+        const matched = map.get(agent.name);
+        if (!matched) continue;
+        if (resolved.some((item) => item.name === matched.name)) continue;
+        resolved.push(matched);
+      }
+
+      if (resolved.length !== agents.length) {
+        new Notice("Some selected agents are unavailable. Falling back to default agent.");
+      }
+
+      return resolved.length > 0 ? resolved : undefined;
+    } catch {
+      new Notice("Could not load agents. Falling back to default agent.");
+      return undefined;
+    }
   }
 }

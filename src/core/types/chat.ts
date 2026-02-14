@@ -37,12 +37,22 @@ export interface ChatMessage {
   mentions?: MentionInfo[];
   /** Mentioned skills via `/` (user messages only). */
   skills?: SkillInfo[];
+  /** Mentioned agents via `@` (user messages only). */
+  agents?: AgentInfo[];
 }
 
 export interface SkillInfo {
   name: string;
   path: string;
   scope: "project" | "global";
+}
+
+export interface AgentInfo {
+  name: string;
+  description?: string;
+  mode: "subagent" | "primary" | "all";
+  hidden?: boolean;
+  builtIn?: boolean;
 }
 
 
