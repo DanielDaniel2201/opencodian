@@ -748,6 +748,13 @@ export class FileMention {
         itemEl.appendChild(scopeEl);
       }
 
+      if (option.type === "category") {
+        const arrowEl = document.createElement("span");
+        arrowEl.className = "opencodian-mention-arrow";
+        arrowEl.textContent = "›";
+        itemEl.appendChild(arrowEl);
+      }
+
       itemEl.addEventListener("mousedown", (e) => {
         e.preventDefault();
         this.selectItem(option);
