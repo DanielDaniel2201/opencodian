@@ -20,7 +20,16 @@ export interface MentionItem {
 
 type UnifiedMentionItem =
   | { type: "file"; item: MentionItem }
-  | { type: "skill"; item: SkillItem };
+  | { type: "skill"; item: SkillItem }
+  | {
+      type: "category";
+      item: {
+        category: "files" | "skills";
+        name: string;
+      };
+    };
+
+type MentionCategory = "root" | "files" | "skills";
 
 export class FileMention {
   private app: App;
@@ -39,6 +48,7 @@ export class FileMention {
   private mentionRange: Range | null = null;
   private isOpen: boolean = false;
   private mentionQueryId: number = 0;
+  private mentionCategory: MentionCategory = "root";
 
   private mentions: MentionItem[] = [];
   private skillMentions: SkillItem[] = [];
@@ -593,32 +603,65 @@ export class FileMention {
     const lowerQuery = query.toLowerCase();
     const mentionedPaths = new Set(this.mentions.map((m) => m.path));
 
-    let filteredFiles = this.fileItems.filter(
+    const availableFiles = this.fileItems.filter(
       (item) => !mentionedPaths.has(item.path),
     );
 
-    if (query) {
-      filteredFiles = filteredFiles.filter((item) => {
-        const lowerPath = item.path.toLowerCase();
-        const lowerName = item.name.toLowerCase();
-        return lowerPath.includes(lowerQuery) || lowerName.includes(lowerQuery);
-      });
-    } else {
-      filteredFiles = filteredFiles.filter((item) => !item.path.includes("/"));
-    }
-
     const mentionedSkills = new Set(this.skillMentions.map((m) => m.path));
-    let filteredSkills = this.skillItems.filter(
+    const availableSkills = this.skillItems.filter(
       (item) => !mentionedSkills.has(item.path),
     );
 
-    if (query) {
-      filteredSkills = filteredSkills.filter((item) => {
-        const name = item.name.toLowerCase();
-        const description = item.description.toLowerCase();
-        return name.includes(lowerQuery) || description.includes(lowerQuery);
-      });
+    if (!query) {
+      if (this.mentionCategory === "root") {
+        this.filteredItems = [
+          {
+            type: "category",
+            item: { category: "files", name: "files" },
+          },
+          {
+            type: "category",
+            item: { category: "skills", name: "skills" },
+          },
+        ];
+        this.selectedIndex = 0;
+        this.renderSuggestions();
+        return;
+      }
+
+      if (this.mentionCategory === "files") {
+        const topLevelFiles = availableFiles.filter(
+          (item) => !item.path.includes("/"),
+        );
+        this.filteredItems = topLevelFiles.map((item) => ({
+          type: "file",
+          item,
+        }));
+        this.selectedIndex = 0;
+        this.renderSuggestions();
+        return;
+      }
+
+      this.filteredItems = availableSkills.map((item) => ({
+        type: "skill",
+        item,
+      }));
+      this.selectedIndex = 0;
+      this.renderSuggestions();
+      return;
     }
+
+    const filteredFiles = availableFiles.filter((item) => {
+      const lowerPath = item.path.toLowerCase();
+      const lowerName = item.name.toLowerCase();
+      return lowerPath.includes(lowerQuery) || lowerName.includes(lowerQuery);
+    });
+
+    const filteredSkills = availableSkills.filter((item) => {
+      const name = item.name.toLowerCase();
+      const description = item.description.toLowerCase();
+      return name.includes(lowerQuery) || description.includes(lowerQuery);
+    });
 
     const fileMatches: UnifiedMentionItem[] = filteredFiles.map((item) => ({
       type: "file",
@@ -668,20 +711,34 @@ export class FileMention {
 
       const iconEl = document.createElement("span");
       iconEl.className = "opencodian-mention-icon";
-      setIcon(
-        iconEl,
-        option.type === "file"
-          ? option.item.isFolder
-            ? "folder"
-            : "file-text"
-          : "wand",
-      );
+      if (option.type === "category") {
+        setIcon(iconEl, option.item.category === "files" ? "folder" : "wand");
+      }
+
+      if (option.type === "file") {
+        setIcon(iconEl, option.item.isFolder ? "folder" : "file-text");
+      }
+
+      if (option.type === "skill") {
+        setIcon(iconEl, "wand");
+      }
+
       itemEl.appendChild(iconEl);
 
       const pathEl = document.createElement("span");
       pathEl.className = "opencodian-mention-path";
-      pathEl.textContent =
-        option.type === "file" ? option.item.path : option.item.name;
+      if (option.type === "category") {
+        pathEl.textContent = option.item.name;
+      }
+
+      if (option.type === "file") {
+        pathEl.textContent = option.item.path;
+      }
+
+      if (option.type === "skill") {
+        pathEl.textContent = option.item.name;
+      }
+
       itemEl.appendChild(pathEl);
 
       if (option.type === "skill") {
@@ -1035,6 +1092,13 @@ export class FileMention {
 
   /** Select an item - insert chip and remove @query */
   private selectItem(item: UnifiedMentionItem): void {
+    if (item.type === "category") {
+      this.mentionCategory = item.item.category;
+      this.filterItems("");
+      this.show();
+      return;
+    }
+
     if (item.type === "file") {
       this.insertFileMention(item.item);
       return;
@@ -1131,6 +1195,7 @@ export class FileMention {
     this.isOpen = false;
     this.suggestionsEl.style.display = "none";
     this.mentionRange = null;
+    this.mentionCategory = "root";
   }
 
   /** Open a file in Obsidian */
