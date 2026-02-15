@@ -30,6 +30,11 @@ import {
   ServerError,
   NetworkError
 } from "../errors";
+import {
+  PseudoGlobalSkillDir,
+  ProjectSkillDirs,
+  SkillDiscoveryEnvKeysToStrip,
+} from "./SkillPolicy";
 
 export interface MentionContext {
   path: string;
@@ -514,27 +519,37 @@ export class OpenCodeService {
         baseEnv[key] = value;
       }
     }
-    delete baseEnv.OPENCODE_CONFIG;
-    delete baseEnv.OPENCODE_CONFIG_CONTENT;
+    for (const key of SkillDiscoveryEnvKeysToStrip) {
+      delete baseEnv[key];
+    }
 
     const customEnv = this.parseEnvironmentVariables(this.environmentVariables);
-    delete customEnv.OPENCODE_CONFIG;
-    delete customEnv.OPENCODE_CONFIG_CONTENT;
-    delete customEnv.OPENCODE_CONFIG_DIR;
+    for (const key of SkillDiscoveryEnvKeysToStrip) {
+      delete customEnv[key];
+    }
 
     const env: Record<string, string> = {
       ...baseEnv,
       ...customEnv,
       OPENCODE_CONFIG_DIR: configDir,
-      OPENCODE_DISABLE_PROJECT_CONFIG: "1",
       OPENCODE_DISABLE_AUTOUPDATE: "1",
       OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
       OPENCODE_DISABLE_FILETIME_CHECK: "1",
-      OPENCODE_DISABLE_CLAUDE_CODE: "1",
       OPENCODE_CLIENT: "opencodian",
       OPENCODE_TEST_HOME: pluginRoot,
+      HOME: pluginRoot,
+      USERPROFILE: pluginRoot,
       XDG_CONFIG_HOME: xdgConfigHome,
     };
+
+    this.log(
+      "Skill discovery scope: project dirs=%o pseudo-global=%s home=%s config=%s",
+      ProjectSkillDirs,
+      PseudoGlobalSkillDir,
+      pluginRoot,
+      configDir,
+    );
+
     if (this.debugEnabled) {
       env.OPENCODE_LOG_LEVEL = "debug";
     }

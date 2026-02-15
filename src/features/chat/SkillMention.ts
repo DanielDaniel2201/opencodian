@@ -6,8 +6,7 @@
  */
 
 import type { App } from "obsidian";
-import * as fs from "fs";
-import * as path from "path";
+import { ProjectSkillDirs, PseudoGlobalSkillDir } from "../../core/agent/SkillPolicy";
 
 export interface SkillItem {
   name: string;
@@ -251,38 +250,36 @@ export class SkillMention {
     this.items = skills;
   }
 
-  private getGlobalSkillsDir(): string | null {
-    const home = process.env.USERPROFILE || process.env.HOME;
-    if (!home) return null;
-    return path.join(home, ".claude", "skills");
-  }
-
   private async readProjectSkills(): Promise<SkillItem[]> {
-    const skillsDir = ".claude/skills";
+    const skillsDirs = ProjectSkillDirs;
     const adapter: any = this.app.vault.adapter as any;
+    const out: SkillItem[] = [];
 
     try {
-      if (!(await adapter.exists(skillsDir))) {
-        return [];
-      }
-
-      const listing = (await adapter.list(skillsDir)) as {
-        files: string[];
-        folders: string[];
-      };
-
-      const out: SkillItem[] = [];
       await Promise.all(
-        listing.folders.map(async (folder: string) => {
-          const skillFile = `${folder}/SKILL.md`;
-          const content = await this.safeReadVaultFile(skillFile);
-          if (!content) return;
+        skillsDirs.map(async (skillsDir) => {
+          if (!(await adapter.exists(skillsDir))) {
+            return;
+          }
 
-          const parsed = this.parseFrontmatter(content);
-          const name = parsed.name || folder.split("/").pop() || folder;
-          const description = parsed.description || "";
+          const listing = (await adapter.list(skillsDir)) as {
+            files: string[];
+            folders: string[];
+          };
 
-          out.push({ name, description, path: skillFile, scope: "project" });
+          await Promise.all(
+            listing.folders.map(async (folder: string) => {
+              const skillFile = `${folder}/SKILL.md`;
+              const content = await this.safeReadVaultFile(skillFile);
+              if (!content) return;
+
+              const parsed = this.parseFrontmatter(content);
+              const name = parsed.name || folder.split("/").pop() || folder;
+              const description = parsed.description || "";
+
+              out.push({ name, description, path: skillFile, scope: "project" });
+            }),
+          );
         }),
       );
 
@@ -308,22 +305,29 @@ export class SkillMention {
   }
 
   private async readGlobalSkills(): Promise<SkillItem[]> {
-    const base = this.getGlobalSkillsDir();
-    if (!base) return [];
-
-    const out: SkillItem[] = [];
+    const skillsDir = PseudoGlobalSkillDir;
+    const adapter: any = this.app.vault.adapter as any;
 
     try {
-      const folderNames = await this.listLocalFolders(base);
+      if (!(await adapter.exists(skillsDir))) {
+        return [];
+      }
+
+      const listing = (await adapter.list(skillsDir)) as {
+        files: string[];
+        folders: string[];
+      };
+
+      const out: SkillItem[] = [];
 
       await Promise.all(
-        folderNames.map(async (name) => {
-          const skillFile = path.join(base, name, "SKILL.md");
-          const content = await this.safeReadAbsoluteFile(skillFile);
+        listing.folders.map(async (folder: string) => {
+          const skillFile = `${folder}/SKILL.md`;
+          const content = await this.safeReadVaultFile(skillFile);
           if (!content) return;
 
           const parsed = this.parseFrontmatter(content);
-          const skillName = parsed.name || name;
+          const skillName = parsed.name || folder.split("/").pop() || folder;
           const description = parsed.description || "";
 
           out.push({
@@ -336,23 +340,6 @@ export class SkillMention {
       );
 
       return out;
-    } catch {
-      return [];
-    }
-  }
-
-  private async safeReadAbsoluteFile(filePath: string): Promise<string | null> {
-    try {
-      return await fs.promises.readFile(filePath, "utf-8");
-    } catch {
-      return null;
-    }
-  }
-
-  private async listLocalFolders(dir: string): Promise<string[]> {
-    try {
-      const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-      return entries.filter((e) => e.isDirectory()).map((e) => e.name);
     } catch {
       return [];
     }
